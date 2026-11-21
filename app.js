@@ -246,8 +246,9 @@ function newBookModal() {
       $('#nbC', m).onclick = close;
       $('#nbOk', m).onclick = async () => {
         const title = $('#nbT', m).value.trim() || 'Sin título';
-        const ref = await addDoc(collection(db, 'books'), { title, author: $('#nbA', m).value.trim(), published: false, coverData: '', createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-        await addDoc(collection(db, 'books', ref.id, 'chapters'), { title: 'Capítulo 1', html: '', order: 1, updatedAt: serverTimestamp() });
+        const ref = doc(collection(db, 'books'));
+        setDoc(ref, { title, author: $('#nbA', m).value.trim(), published: false, coverData: '', createdAt: serverTimestamp(), updatedAt: serverTimestamp() }).catch(e => { console.error(e); toast('⚠️ No se pudo crear el libro. Revisa la conexión.', 5000); });
+        setDoc(doc(collection(db, 'books', ref.id, 'chapters')), { title: 'Capítulo 1', html: '', order: 1, updatedAt: serverTimestamp() }).catch(() => {});
         close(); location.hash = '#/edit/' + ref.id;
       };
     });
@@ -374,7 +375,26 @@ async function renderEditor(id) {
   try { data = await loadBook(id); } catch { location.hash = '#/'; return; }
   const { book, imgs } = data; let chapters = data.chapters;
   let active = chapters[0]?.id, dirty = false, timer = null, lastRange = null, selImg = null;
-  if (!chapters.length) { const r = await addDoc(collection(db, 'books', id, 'chapters'), { title: 'Capítulo 1', html: '', order: 1, updatedAt: serverTimestamp() }); chapters = [{ id: r.id, title: 'Capítulo 1', html: '', order: 1 }]; active = r.id; }
+  // Las escrituras NO esperan al servidor: con mala conexión la pantalla sigue respondiendo y Firestore las sube cuando puede.
+  const bg = (p, what = 'guardar') => Promise.resolve(p).catch(e => { console.error(e); toast('⚠️ No se pudo ' + what + '. Revisa la conexión.', 5000); });
+  const newChapter = (title, html, order) => { const ref = doc(collection(db, 'books', id, 'chapters')); bg(setDoc(ref, { title, html, order, updatedAt: serverTimestamp() }), 'crear el capítulo'); return { id: ref.id, title, html, order }; };
+  const reorder = () => { const b = writeBatch(db); chapters.forEach((c, k) => { c.order = k + 1; b.update(doc(db, 'books', id, 'chapters', c.id), { order: c.order }); }); return bg(b.commit(), 'guardar el orden'); };
+  /* Copias de seguridad en este dispositivo: por si se borra o se corta algo sin querer (➕ Más → Recuperar) */
+  const SNAPK = 'ob-snap-' + id;
+  const snaps = () => { try { return JSON.parse(localStorage.getItem(SNAPK) || '[]'); } catch { return []; } };
+  const saveSnaps = a => { try { let t = JSON.stringify(a); while (t.length > 2.2e6 && a.length > 3) { a.shift(); t = JSON.stringify(a); } localStorage.setItem(SNAPK, t); } catch { try { a.splice(0, Math.ceil(a.length / 2)); localStorage.setItem(SNAPK, JSON.stringify(a)); } catch {} } };
+  function snap(c, why, force) {
+    try {
+      if (!c || !(c.html || '').trim()) return;
+      let a = snaps(); const last = [...a].reverse().find(x => x.cid === c.id);
+      if (last && last.html === c.html) return;
+      if (!force && last && Date.now() - last.t < 5 * 60e3) return;
+      a.push({ t: Date.now(), cid: c.id, title: c.title, html: c.html, why });
+      const mine = a.filter(x => x.cid === c.id); if (mine.length > 12) { const drop = new Set(mine.slice(0, mine.length - 12)); a = a.filter(x => !drop.has(x)); }
+      saveSnaps(a);
+    } catch {}
+  }
+  if (!chapters.length) { chapters = [newChapter('Capítulo 1', '', 1)]; active = chapters[0].id; }
 
   app.innerHTML = topbar(`<button class="btn drawer-btn" id="drw">☰ Capítulos</button><span class="title-mini" id="bk">${esc(book.title)}</span>`,
     `<button class="btn icon" id="helpBtn" title="Ayuda">❓</button><a class="btn" href="#/read/${id}">👁 Leer</a><button class="btn icon" id="shBtn" title="Exportar / compartir">⤴</button>`) +
@@ -398,7 +418,7 @@ async function renderEditor(id) {
           <button id="pbBtn" title="Empezar una hoja nueva"><i>📄</i><span>Hoja nueva</span></button><button id="liveBtn" title="Te aviso de las faltas mientras escribes">🔤 Corrector: apagado</button><button id="qBtn"><i>❝</i><span>Cita</span></button>
           <button data-c="justifyLeft"><i>⯇</i><span>Izquierda</span></button><button data-c="justifyCenter"><i>≡</i><span>Centro</span></button><button data-c="justifyRight"><i>⯈</i><span>Derecha</span></button>
           <button data-c="insertUnorderedList"><i>•</i><span>Lista</span></button><button data-c="insertOrderedList"><i>1.</i><span>Lista 1,2,3</span></button><button data-c="redo"><i>↷</i><span>Rehacer</span></button>
-          <button id="mergeBtn" class="wide"><i>⛓</i><span>Unir con el capítulo de antes</span></button>
+          <button id="mergeBtn" class="wide"><i>⛓</i><span>Unir con el capítulo de antes</span></button><button id="recBtn" class="wide"><i>⏪</i><span>Recuperar texto anterior</span></button>
         </div>
         <input type="file" id="file" accept="image/*" class="hidden"></div></main></div>`;
   bindTopbar();
@@ -427,7 +447,7 @@ async function renderEditor(id) {
     clearTimeout(timer); if (!dirty) return; dirty = false;
     const c = cur(); if (!c) return;
     try {
-      c.title = ti.value.trim() || 'Sin título'; c.html = dehydrate(ed.innerHTML);
+      c.title = ti.value.trim() || 'Sin título'; c.html = dehydrate(ed.innerHTML); snap(c, 'auto');
       stt.textContent = '💾 Guardando…';
       const slow = setTimeout(() => { if (!dirty && stt.textContent === '💾 Guardando…') stt.textContent = '📱 Guardado aquí (se subirá con la conexión)'; }, 2500);
       // el guardado local es inmediato; la confirmación del servidor puede tardar
@@ -441,12 +461,15 @@ async function renderEditor(id) {
   const touch = () => { dirty = true; stt.textContent = '✏️ Escribiendo…'; $('#wc').textContent = wordCount(ed.innerHTML) + ' palabras'; clearTimeout(timer); timer = setTimeout(flush, 1200); schedPages(); };
   ed.addEventListener('input', () => { touch(); hideFix(); scheduleLive(); }); ti.addEventListener('input', touch);
   window.addEventListener('beforeunload', () => { if (dirty) flush(); });
+  const onHide = () => { if (dirty) flush(); }; window.addEventListener('pagehide', onHide); unsubs.push(() => window.removeEventListener('pagehide', onHide));
+  ti.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ed.focus(); const r = document.createRange(); r.selectNodeContents(ed); r.collapse(true); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(r); } });
   unsubs.push(() => { flush(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
   ed.addEventListener('paste', e => {
     e.preventDefault();
     const h = e.clipboardData.getData('text/html'), t = e.clipboardData.getData('text/plain');
-    document.execCommand('insertHTML', false, h ? sanitize(h).replace(/<img[^>]*>/g, '') : esc(t).replace(/\n/g, '<br>'));
+    const lines = esc(t).split(/\r?\n/).map(l => l.trim()).filter(Boolean);   // texto plano: cada línea es un párrafo
+    document.execCommand('insertHTML', false, h ? sanitize(h).replace(/<img[^>]*>/g, '') : lines.length > 1 ? lines.map(l => '<p>' + l + '</p>').join('') : lines[0] || '');
   });
   document.addEventListener('selectionchange', () => {
     const s = getSelection(); if (s.rangeCount && ed.contains(s.anchorNode)) lastRange = s.getRangeAt(0).cloneRange();
@@ -456,24 +479,40 @@ async function renderEditor(id) {
     await flush();
     const i = chapters.findIndex(c => c.id === cid), j = i + dir; if (j < 0 || j >= chapters.length) return;
     [chapters[i], chapters[j]] = [chapters[j], chapters[i]];
-    const b = writeBatch(db); chapters.forEach((c, k) => { c.order = k + 1; b.update(doc(db, 'books', id, 'chapters', c.id), { order: c.order }); });
-    await b.commit(); drawList();
+    reorder(); drawList();
   }
   async function delChap(cid) {
     const c = chapters.find(x => x.id === cid);
-    if (!confirm(`¿Borrar "${c.title}"? No se puede deshacer.`)) return;
-    clearTimeout(timer); dirty = false;
-    await deleteDoc(doc(db, 'books', id, 'chapters', cid));
+    if (!confirm(`¿Borrar "${c.title}"? Podrás recuperar el texto en ➕ Más → Recuperar texto.`)) return;
+    if (cid === active) { clearTimeout(timer); dirty = false; } else await flush();   // no perder lo último escrito en el capítulo abierto
+    snap(c, 'borrado', true);
+    bg(deleteDoc(doc(db, 'books', id, 'chapters', cid)), 'borrar el capítulo');
     chapters = chapters.filter(x => x.id !== cid);
-    if (!chapters.length) { const r = await addDoc(collection(db, 'books', id, 'chapters'), { title: 'Capítulo 1', html: '', order: 1, updatedAt: serverTimestamp() }); chapters = [{ id: r.id, title: 'Capítulo 1', html: '', order: 1 }]; }
+    if (!chapters.length) chapters = [newChapter('Capítulo 1', '', 1)]; else reorder();
     if (active === cid) active = chapters[0].id; show();
   }
   $('#addCh').onclick = async () => {
     await flush();
-    const n = chapters.length + 1, r = await addDoc(collection(db, 'books', id, 'chapters'), { title: 'Capítulo ' + n, html: '', order: n, updatedAt: serverTimestamp() });
-    chapters.push({ id: r.id, title: 'Capítulo ' + n, html: '', order: n }); active = r.id; show(); ti.select(); $('#side').classList.remove('open');
+    const n = chapters.length + 1, nc = newChapter('Capítulo ' + n, '', n);
+    chapters.push(nc); active = nc.id; show(); ti.select(); $('#side').classList.remove('open');
   };
   $('#drw').onclick = () => $('#side').classList.toggle('open');
+  $('#recBtn').onclick = () => {
+    const a = snaps().sort((x, y) => y.t - x.t).slice(0, 40), fmt = t => new Date(t).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const plain = h => { const d = document.createElement('div'); d.innerHTML = h; return (d.textContent || '').trim(); };
+    modal(`<h2>⏪ Recuperar texto anterior</h2><p class="muted" style="margin:0 0 8px">Aquí se guardan copias del texto en este dispositivo. Al recuperar una, se crea un <b>capítulo nuevo</b>: no se pierde nada de lo que tienes ahora.</p>
+      ${a.length ? a.map((x, k) => `<div class="sug"><div style="font-weight:700">${esc(x.title || 'Sin título')} <span class="muted" style="font-weight:400">· ${fmt(x.t)} · ${x.why === 'auto' ? 'copia automática' : esc(x.why)}</span></div>
+        <div class="ctx muted">${esc(plain(x.html).slice(0, 110))}…</div><button class="btn" data-k="${k}">Recuperar como capítulo nuevo</button></div>`).join('') : '<p>Todavía no hay copias. Se van guardando solas mientras escribes.</p>'}
+      <div style="text-align:right;margin-top:12px"><button class="btn" id="rcX">Cerrar</button></div>`,
+      (m, close) => {
+        $('#rcX', m).onclick = close;
+        $$('[data-k]', m).forEach(b => b.onclick = async () => {
+          const x = a[+b.dataset.k]; close(); await flush();
+          const nc = newChapter((x.title || 'Capítulo') + ' (recuperado)', x.html, chapters.length + 1);
+          chapters.push(nc); active = nc.id; show(); $('#more').classList.add('hidden'); toast('✅ Texto recuperado en un capítulo nuevo');
+        });
+      });
+  };
 
   const tipCheck = () => $('#tip').classList.toggle('hidden', !(chapters.length === 1 && wordCount(ed.innerHTML) > 250 && !store.get('ob-tip-' + id, '')));
   $('#tipX').onclick = () => { store.set('ob-tip-' + id, '1'); tipCheck(); };
@@ -495,15 +534,13 @@ async function renderEditor(id) {
         $('#scX', m).onclick = close;
         $('#scOk', m).onclick = async () => {
           close();
-          const frag = post.extractContents(); const tmp = document.createElement('div'); tmp.append(frag);
+          const before = dehydrate(ed.innerHTML), frag = post.extractContents(); const tmp = document.createElement('div'); tmp.append(frag);
           while (ed.lastElementChild && ed.lastElementChild.tagName !== 'IMG' && !ed.lastElementChild.classList.contains('pagebreak') && !hasContent(ed.lastElementChild)) ed.lastElementChild.remove();
           [...tmp.children].forEach(el => { if (el.tagName === 'P' && !hasContent(el)) el.remove(); else return; });
+          snap({ ...chapters[i], html: before }, 'antes de cortar', true);
           dirty = true; await flush();
-          const nc = { title: inp.value.trim() || 'Capítulo ' + (i + 2), html: dehydrate(tmp.innerHTML), order: i + 2 };
-          const ref = await addDoc(collection(db, 'books', id, 'chapters'), { title: nc.title, html: nc.html, order: nc.order, updatedAt: serverTimestamp() });
-          nc.id = ref.id; chapters.splice(i + 1, 0, nc);
-          const b = writeBatch(db); chapters.forEach((c, k) => { c.order = k + 1; b.update(doc(db, 'books', id, 'chapters', c.id), { order: c.order }); });
-          await b.commit(); active = nc.id; show(); toast('✅ ¡Capítulo creado!');
+          const nc = newChapter(inp.value.trim() || 'Capítulo ' + (i + 2), dehydrate(tmp.innerHTML), i + 2);
+          chapters.splice(i + 1, 0, nc); reorder(); active = nc.id; show(); toast('✅ ¡Capítulo creado!');
         };
       });
   };
@@ -513,12 +550,11 @@ async function renderEditor(id) {
     if (!confirm(`¿Unir "${chapters[i].title}" con "${chapters[i - 1].title}"? El texto se pasará al final del capítulo de antes.`)) return;
     dirty = true; await flush();
     const prev = chapters[i - 1], cur = chapters[i];
+    snap(prev, 'antes de unir', true); snap(cur, 'antes de unir', true);
     prev.html = (prev.html || '') + (cur.html || '');
-    await setDoc(doc(db, 'books', id, 'chapters', prev.id), { html: prev.html, updatedAt: serverTimestamp() }, { merge: true });
-    await deleteDoc(doc(db, 'books', id, 'chapters', cur.id));
-    chapters.splice(i, 1);
-    const b = writeBatch(db); chapters.forEach((c, k) => { c.order = k + 1; b.update(doc(db, 'books', id, 'chapters', c.id), { order: c.order }); });
-    await b.commit(); active = prev.id; show(); toast('✅ Capítulos unidos');
+    bg(setDoc(doc(db, 'books', id, 'chapters', prev.id), { html: prev.html, updatedAt: serverTimestamp() }, { merge: true }));
+    bg(deleteDoc(doc(db, 'books', id, 'chapters', cur.id)), 'unir los capítulos');
+    chapters.splice(i, 1); reorder(); active = prev.id; show(); toast('✅ Capítulos unidos');
   };
 
   /* ================= 🧚 AYUDANTE ================= */
@@ -578,7 +614,7 @@ async function renderEditor(id) {
   }
 
   async function applyCuts(cuts, map) {
-    dirty = true; await flush();
+    dirty = true; await flush(); snap(cur(), 'antes de cortar', true);
     const i = chapters.findIndex(c => c.id === active);
     const made = [];
     for (const c of [...cuts].reverse()) {
@@ -591,12 +627,9 @@ async function renderEditor(id) {
     while (ed.lastElementChild && ed.lastElementChild.tagName !== 'IMG' && !ed.lastElementChild.classList.contains('pagebreak') && !hasContent(ed.lastElementChild)) ed.lastElementChild.remove();
     dirty = true; await flush();
     for (let k = 0; k < made.length; k++) {
-      const nc = { title: made[k].title, html: made[k].html, order: i + 2 + k };
-      const ref = await addDoc(collection(db, 'books', id, 'chapters'), { title: nc.title, html: nc.html, order: nc.order, updatedAt: serverTimestamp() });
-      nc.id = ref.id; chapters.splice(i + 1 + k, 0, nc);
+      chapters.splice(i + 1 + k, 0, newChapter(made[k].title, made[k].html, i + 2 + k));
     }
-    const b = writeBatch(db); chapters.forEach((c, k) => { c.order = k + 1; b.update(doc(db, 'books', id, 'chapters', c.id), { order: c.order }); });
-    await b.commit(); show();
+    reorder(); show();
     toast(`✅ ¡Listo! Ahora tienes ${chapters.length} capítulos`);
   }
 
@@ -686,8 +719,8 @@ async function renderEditor(id) {
     let rid = null;
     if (im.key) for (const [k, v] of imgs) if (v.key === im.key) { rid = k; break; }
     if (!rid) {
-      const r = await addDoc(collection(db, 'books', id, 'images'), { data: im.data, w: im.w, h: im.h, key: im.key || '', createdAt: serverTimestamp() });
-      rid = r.id; imgs.set(rid, im);
+      const ref = doc(collection(db, 'books', id, 'images')); rid = ref.id; imgs.set(rid, im);
+      bg(setDoc(ref, { data: im.data, w: im.w, h: im.h, key: im.key || '', createdAt: serverTimestamp() }), 'guardar el dibujo');
     }
     restoreSel();
     document.execCommand('insertHTML', false, `<img data-img="${rid}" class="sz-s" src="${imgs.get(rid).data}" alt="Ilustración"><p><br></p>`);
@@ -703,7 +736,7 @@ async function renderEditor(id) {
       <div class="cgrid" id="cvG">${COVERS.map(c => `<button class="cthumb" data-c="${c.id}" aria-label="${esc(c.name)}"></button>`).join('')}</div>
       <input type="file" id="cvF" accept="image/*" class="hidden"><div style="text-align:right;margin-top:12px"><button class="btn" id="cvX">Cerrar</button></div>`,
       (m, close) => {
-        const setCover = async data => { book.coverData = data; await updateDoc(doc(db, 'books', id), { coverData: data, updatedAt: serverTimestamp() }); const p = $('#cvP', m); p.style.backgroundImage = data ? `url('${data}')` : ''; p.textContent = data ? '' : book.title; toast('✅ Portada guardada'); };
+        const setCover = async data => { book.coverData = data; bg(updateDoc(doc(db, 'books', id), { coverData: data, updatedAt: serverTimestamp() }), 'guardar la portada'); const p = $('#cvP', m); p.style.backgroundImage = data ? `url('${data}')` : ''; p.textContent = data ? '' : book.title; toast('✅ Portada guardada'); };
         $('#cvX', m).onclick = close; $('#cvPick', m).onclick = () => $('#cvF', m).click(); $('#cvDel', m).onclick = () => setCover('');
         $('#cvF', m).onchange = async e => { const f = e.target.files[0]; if (!f) return; try { setCover((await compressImage(f, 900, 0.8)).data); } catch { toast('No pude usar esa imagen'); } };
         $$('.cthumb', m).forEach(b => {
@@ -933,9 +966,9 @@ async function renderEditor(id) {
     try {
       stt.textContent = '🖼 Añadiendo dibujo…';
       const im = await compressImage(f);
-      const r = await addDoc(collection(db, 'books', id, 'images'), { data: im.data, w: im.w, h: im.h, createdAt: serverTimestamp() });
-      imgs.set(r.id, im); restoreSel();
-      document.execCommand('insertHTML', false, `<img data-img="${r.id}" class="sz-m" src="${im.data}" alt="Ilustración"><p><br></p>`);
+      const ref = doc(collection(db, 'books', id, 'images')); imgs.set(ref.id, im);
+      bg(setDoc(ref, { data: im.data, w: im.w, h: im.h, createdAt: serverTimestamp() }), 'guardar el dibujo'); restoreSel();
+      document.execCommand('insertHTML', false, `<img data-img="${ref.id}" class="sz-m" src="${im.data}" alt="Ilustración"><p><br></p>`);
       touch();
     } catch (x) { console.error(x); toast('No se pudo añadir la imagen'); stt.textContent = ''; }
   };
@@ -971,11 +1004,12 @@ async function renderEditor(id) {
       $('#sX', m).onclick = close;
       $('#sOk', m).onclick = async () => {
         Object.assign(book, { title: $('#sT', m).value.trim() || 'Sin título', author: $('#sA', m).value.trim(), published: $('#sP', m).checked, coverData: cover });
-        await updateDoc(doc(db, 'books', id), { title: book.title, author: book.author, published: book.published, coverData: cover, updatedAt: serverTimestamp() });
+        bg(updateDoc(doc(db, 'books', id), { title: book.title, author: book.author, published: book.published, coverData: cover, updatedAt: serverTimestamp() }), 'guardar los ajustes');
         $('#bk').textContent = book.title; close(); toast('Ajustes guardados');
       };
       $('#sD', m).onclick = async () => {
         if (!confirm(`¿Borrar "${book.title}" con todos sus capítulos e imágenes? No se puede deshacer.`)) return;
+        if ((prompt('Para confirmar, escribe BORRAR (en mayúsculas).') || '').trim() !== 'BORRAR') return toast('No se ha borrado nada 👍');
         dirty = false; clearTimeout(timer);
         for (const sub of ['chapters', 'images']) {
           const s = await getDocs(collection(db, 'books', id, sub)); let b = writeBatch(db), n = 0;
