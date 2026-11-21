@@ -838,6 +838,29 @@ async function renderEditor(id) {
     const st = $('#stats'); if (st) st.innerHTML = st.innerHTML.replace(/📄[^<]*$/, '') + `📄 ${totalPages} página${totalPages === 1 ? '' : 's'}`;
   }
   document.addEventListener('selectionchange', () => { if (ed.contains(getSelection().anchorNode)) schedPages(250); });
+  /* ----- 🖱 Si pulsa en el hueco de abajo, el cursor va al final de lo escrito ----- */
+  function caretToEnd(e) {
+    if (e.button > 0) return;
+    const t = e.target, sheet = t.closest?.('.sheet');
+    if (!sheet || t === ti || t.closest('#liveChip,.fixpop,img')) return;
+    let last = null;
+    for (let i = ed.children.length - 1; i >= 0; i--) {
+      const el = ed.children[i];
+      if (el.matches('img,.pagebreak') || el.querySelector('img,.pagebreak')) break;      // no tocar si lo último es un dibujo
+      if (el.textContent.replace(/\u200b/g, '').trim()) { last = el; break; }
+    }
+    if (!last) return;
+    const r = last.getBoundingClientRect();
+    if (e.clientY <= r.bottom + 4) return;                                            // pulsó sobre el texto: respetar
+    e.preventDefault(); ed.focus();
+    const range = document.createRange(); range.selectNodeContents(last);
+    const lc = last.lastChild; if (lc && lc.nodeName === 'BR' && last.childNodes.length > 1) range.setStartBefore(lc); 
+    range.collapse(lc && lc.nodeName === 'BR' && last.childNodes.length > 1 ? true : false);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    last.scrollIntoView({ block: 'nearest' });
+  }
+  $('.sheet').addEventListener('mousedown', caretToEnd);
+
   /* barra de herramientas */
   $('#tb').addEventListener('mousedown', e => { if (!e.target.matches('select,input')) e.preventDefault(); });
   $$('[data-c]').forEach(b => b.onclick = () => { ed.focus(); document.execCommand(b.dataset.c); touch(); });
