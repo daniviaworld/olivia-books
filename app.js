@@ -1105,24 +1105,29 @@ async function renderShelf() {
    ===================================================================== */
 let _fam = null, _famUid = null;
 const getFam = async () => { if (!_fam || _famUid !== state.user.uid) { _famUid = state.user.uid; _fam = libDB(state.user.uid + '-fam'); } return _fam; };
-const stg = async () => { const S = await import(FB + 'firebase-storage.js'); return { S, st: S.getStorage(fbApp) }; };
-const MAXSHARE = 100 * 1048576;
-const shareErr = e => /permission|unauthorized|403/i.test(e?.code + ' ' + e?.message) ? 'sin permiso (revisa las reglas de Firebase)' : /cors|network|failed to fetch|retry/i.test(e?.code + ' ' + e?.message) ? 'revisa la conexión o la configuración CORS' : (e?.message || 'error');
+const MAXSHARE = 80 * 1048576, CH = 800 * 1024;
+const shareErr = e => /permission|unauthorized|403/i.test(e?.code + ' ' + e?.message) ? 'sin permiso (faltan publicar las reglas de Firebase)' : /unavailable|network|offline|failed to fetch/i.test(e?.code + ' ' + e?.message) ? 'sin conexión o conexión inestable' : (e?.message || 'error');
 
 async function shareBook(lib, b) {
-  if (b.size > MAXSHARE) throw new Error('Pesa más de 100 MB');
+  if (b.size > MAXSHARE) throw new Error('Pesa más de 80 MB');
   const blob = await lib.file(b.id); if (!blob) throw new Error('El archivo ya no está aquí');
-  const sid = b.sharedId || newId(), me = state.user, path = `shared/${me.uid}/${sid}/book.${b.format}`;
-  const { S, st } = await stg();
-  const task = S.uploadBytesResumable(S.ref(st, path), blob, { contentType: b.format === 'pdf' ? 'application/pdf' : 'application/epub+zip' });
-  await new Promise((res, rej) => task.on('state_changed', s => toast(`⬆️ Compartiendo… ${Math.round(s.bytesTransferred / Math.max(1, s.totalBytes) * 100)} %`, 60000), rej, res));
-  await setDoc(doc(db, 'shared', sid), { title: b.title, author: b.author || '', series: b.series || '', seriesNo: b.seriesNo ?? null, format: b.format, size: b.size, path, cover: b.cover && b.cover.length < 300000 ? b.cover : '', ownerUid: me.uid, ownerName: me.displayName || (me.email || '').split('@')[0], createdAt: serverTimestamp() });
-  b.sharedId = sid; b.sharedPath = path; await lib.update(b);
+  const buf = new Uint8Array(await blob.arrayBuffer()), n = Math.ceil(buf.length / CH), sid = b.sharedId || newId(), me = state.user;
+  const ref = doc(db, 'shared', sid);
+  await setDoc(ref, { title: b.title, author: b.author || '', series: b.series || '', seriesNo: b.seriesNo ?? null, format: b.format, size: b.size, chunks: n, ready: false, cover: b.cover && b.cover.length < 300000 ? b.cover : '', ownerUid: me.uid, ownerName: me.displayName || (me.email || '').split('@')[0], createdAt: serverTimestamp() });
+  try {
+    for (let i = 0; i < n; i++) {
+      toast(`⬆️ Compartiendo… ${Math.round(i / n * 100)} %`, 60000);
+      await setDoc(doc(db, 'shared', sid, 'chunks', String(i)), { i, d: F.Bytes.fromUint8Array(buf.subarray(i * CH, (i + 1) * CH)) });
+    }
+    await updateDoc(ref, { ready: true });
+  } catch (e) { try { await unshare(sid); } catch {} throw e; }
+  b.sharedId = sid; await lib.update(b);
 }
-async function unshare(sid, path) {
-  const { S, st } = await stg();
-  if (path) { try { await S.deleteObject(S.ref(st, path)); } catch (e) { if (!/not-found|object-not-found/.test(e?.code || '')) throw e; } }
-  await deleteDoc(doc(db, 'shared', sid));
+async function unshare(sid) {
+  const ref = doc(db, 'shared', sid); let n = 0;
+  try { const s = await getDoc(ref); n = s.data()?.chunks || 0; } catch {}
+  for (let i = 0; i < n; i += 400) { const w = writeBatch(db); for (let j = i; j < Math.min(n, i + 400); j++) w.delete(doc(db, 'shared', sid, 'chunks', String(j))); await w.commit(); }
+  await deleteDoc(ref);
   try { const fl = await getFam(); await fl.remove(sid); } catch {}
 }
 
@@ -1173,7 +1178,7 @@ function famMenu(lib, b, isCached, mine, done) {
     $('#fmX', m).onclick = close;
     if ($('#fmC', m)) $('#fmC', m).onclick = async () => { await lib.remove(b.id); close(); toast('Quitado de este dispositivo'); done(); };
     let sure = false;
-    if ($('#fmU', m)) $('#fmU', m).onclick = async e => { if (!sure) { sure = true; e.target.textContent = '¿Seguro? Pulsa otra vez'; return; } e.target.disabled = true; try { await unshare(b.id, b.path); close(); toast('Ya no se comparte'); } catch (er) { console.error(er); e.target.disabled = false; toast('No se pudo: ' + shareErr(er), 6000); } };
+    if ($('#fmU', m)) $('#fmU', m).onclick = async e => { if (!sure) { sure = true; e.target.textContent = '¿Seguro? Pulsa otra vez'; return; } e.target.disabled = true; try { await unshare(b.id); close(); toast('Ya no se comparte'); } catch (er) { console.error(er); e.target.disabled = false; toast('No se pudo: ' + shareErr(er), 6000); } };
   });
 }
 async function renderFamBook(id) {
@@ -1181,17 +1186,27 @@ async function renderFamBook(id) {
   const lib = await getFam();
   let meta = await lib.meta(id);
   if (!meta || !(await lib.file(id))) {
-    app.innerHTML = topbar() + '<div class="center-box"><div class="card" style="text-align:center"><div class="spinner"></div><p>📥 Preparando el libro…<br><small class="muted">La primera vez se descarga; luego se lee sin conexión.</small></p></div></div>'; bindTopbar();
+    app.innerHTML = topbar() + '<div class="center-box"><div class="card" style="text-align:center"><div class="spinner"></div><p id="dlp">📥 Preparando el libro…</p><p><small class="muted">La primera vez se descarga; luego se lee sin conexión.</small></p></div></div>'; bindTopbar();
     try {
       const s = await getDoc(doc(db, 'shared', id));
       if (!s.exists()) { toast('Ese libro ya no se comparte'); location.hash = '#/fshelf'; return; }
-      const d = s.data(), { S, st } = await stg(), blob = await S.getBlob(S.ref(st, d.path));
+      const d = s.data();
+      if (!d.chunks) throw new Error('Este libro se compartió con una versión antigua. Pide que lo vuelvan a compartir.');
+      if (d.ready === false) throw new Error('Todavía se está subiendo. Inténtalo en un minuto.');
+      const get = F.getDocFromServer || getDoc, parts = [];
+      for (let i = 0; i < d.chunks; i++) {
+        const p = $('#dlp'); if (p) p.textContent = `📥 Descargando… ${Math.round(i / d.chunks * 100)} %`;
+        const c = await get(doc(db, 'shared', id, 'chunks', String(i)));
+        if (!c.exists()) throw new Error('Falta un trozo del libro. Pide que lo vuelvan a compartir.');
+        parts.push(c.data().d.toUint8Array());
+      }
+      const blob = new Blob(parts, { type: d.format === 'pdf' ? 'application/pdf' : 'application/epub+zip' });
       meta = { id, sig: 'fam|' + id, name: d.title, format: d.format, size: d.size, addedAt: Date.now(), lastRead: 0, pos: 0, page: 1, title: d.title, author: d.author || '', series: d.series || '', seriesNo: d.seriesNo ?? null, cover: d.cover || '', ownerName: d.ownerName || '' };
       await lib.add(meta, blob);
     } catch (e) {
       console.error(e);
       if (location.hash !== '#/fbook/' + id) return;
-      app.innerHTML = topbar() + `<div class="empty"><div style="font-size:44px">📡</div><p>No se pudo descargar el libro.<br><small>${esc(shareErr(e))}</small><br><small class="muted">${esc(e?.code || e?.name || '')}</small></p><a class="btn" href="#/fshelf">Volver</a></div>`; bindTopbar(); return;
+      app.innerHTML = topbar() + `<div class="empty"><div style="font-size:44px">📡</div><p>No se pudo descargar el libro.<br><small>${esc(shareErr(e))}</small></p><a class="btn" href="#/fshelf">Volver</a></div>`; bindTopbar(); return;
     }
   }
   if (location.hash !== '#/fbook/' + id) return;
@@ -1212,7 +1227,7 @@ function editBook(lib, b, done) {
       const saveEdits = async () => { b.title = $('#ebT', m).value.trim() || b.title; b.author = $('#ebA', m).value.trim(); b.series = $('#ebS', m).value.trim(); const n = parseFloat($('#ebN', m).value.replace(',', '.')); b.seriesNo = b.series && !isNaN(n) ? n : null; await lib.update(b); if (b.sharedId) updateDoc(doc(db, 'shared', b.sharedId), { title: b.title, author: b.author || '', series: b.series || '', seriesNo: b.seriesNo ?? null }).catch(() => {}); };
       $('#ebOk', m).onclick = async () => { await saveEdits(); close(); done(); };
       if ($('#ebSh', m)) $('#ebSh', m).onclick = async e => { e.target.disabled = true; try { await saveEdits(); await shareBook(lib, b); close(); toast('✅ Compartido con la familia'); done(); } catch (er) { console.error(er); e.target.disabled = false; toast('No se pudo compartir: ' + shareErr(er), 6000); } };
-      if ($('#ebU', m)) $('#ebU', m).onclick = async e => { e.target.disabled = true; try { await unshare(b.sharedId, b.sharedPath); b.sharedId = null; b.sharedPath = null; await lib.update(b); close(); toast('Ya no se comparte'); done(); } catch (er) { console.error(er); e.target.disabled = false; toast('No se pudo: ' + shareErr(er), 6000); } };
+      if ($('#ebU', m)) $('#ebU', m).onclick = async e => { e.target.disabled = true; try { await unshare(b.sharedId); b.sharedId = null; await lib.update(b); close(); toast('Ya no se comparte'); done(); } catch (er) { console.error(er); e.target.disabled = false; toast('No se pudo: ' + shareErr(er), 6000); } };
       let sure = false; $('#ebD', m).onclick = async e => { if (!sure) { sure = true; e.target.textContent = '¿Seguro? Pulsa otra vez'; return; } await lib.remove(b.id); close(); toast('Libro quitado de este dispositivo'); done(); };
     });
 }
