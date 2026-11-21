@@ -107,7 +107,7 @@ input:focus,textarea:focus,select:focus,[contenteditable]:focus{outline:2px soli
 .pages section{break-before:column}
 .pages section:first-child{break-before:auto}
 .pages .pagebreak{break-after:column;height:0}
-.pages img{max-height:calc(var(--ph,500px)*.78);width:auto;max-width:100%;break-inside:avoid;object-fit:contain}
+.pages img{max-height:calc(var(--ph,500px)*.62);width:auto;max-width:100%;break-inside:avoid;object-fit:contain}
 .pages img.sz-s{max-width:35%}.pages img.sz-m{max-width:65%}
 .pages p{text-align:justify;hyphens:auto;-webkit-hyphens:auto}
 .titlepage{display:flex;flex-direction:column;align-items:center;justify-content:center;height:var(--ph,500px);text-align:center;gap:10px}

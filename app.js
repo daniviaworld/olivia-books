@@ -257,11 +257,29 @@ async function renderReader(id) {
   hydrate(pages, imgs);
 
   const imgsReady = Promise.all($$('img', pages).map(i => i.decode?.().catch(() => {}) ?? 0));
+  /* Ajusta los dibujos para que no queden solos en una página: si no caben en el hueco
+     que queda al final de la página anterior, se encogen para entrar. */
+  function fitImages() {
+    const ims = $$('img', pages); ims.forEach(i => { i.style.maxHeight = ''; });
+    const col = x => Math.floor((x - pages.getBoundingClientRect().left + 3) / W);
+    const bottom = pager.getBoundingClientRect().top + pager.clientHeight - 24;
+    for (let pass = 0; pass < 2; pass++) for (const im of ims) {
+      let prev = im.previousElementSibling || im.parentElement?.previousElementSibling;
+      if (!prev || prev === pages) continue;
+      const rs = prev.getClientRects(); if (!rs.length) continue;
+      const last = rs[rs.length - 1], r = im.getBoundingClientRect();
+      if (col(r.left) <= col(last.left)) continue;          // ya está en la misma página
+      const cs = getComputedStyle(im), mg = parseFloat(cs.marginTop) + parseFloat(cs.marginBottom);
+      const free = bottom - last.bottom - mg - 6;
+      if (free >= 70 && free < r.height) im.style.maxHeight = Math.floor(free) + 'px';
+    }
+  }
   function layout(keepRatio = true) {
     if (!pager.isConnected) return;
     const ratio = total > 1 ? cur / (total - 1) : 0;
     W = pager.clientWidth;
     pages.style.setProperty('--ph', (pager.clientHeight - 52) + 'px');
+    fitImages();
     total = Math.max(1, Math.ceil(pager.scrollWidth / W - 0.02));
     const pr = pages.getBoundingClientRect().left;
     startPages.length = 0;
