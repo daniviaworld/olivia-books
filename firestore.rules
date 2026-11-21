@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ⚠️ Cambia este correo por el de Olivia (el MISMO que en firebase-config.js)
+    function isWriter() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() == 'daniviaworld@gmail.com';
+    }
+    function isApproved() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.approved == true;
+    }
+    function bookIsPublished(bookId) {
+      return get(/databases/$(database)/documents/books/$(bookId)).data.published == true;
+    }
+    function canRead(bookId) {
+      return isWriter() || (isApproved() && bookIsPublished(bookId));
+    }
+
+    // Familia: cada persona crea su ficha (sin aprobar); solo Olivia aprueba.
+    match /users/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || isWriter());
+      allow create: if request.auth != null && request.auth.uid == uid
+                    && request.resource.data.approved == false
+                    && request.resource.data.keys().hasOnly(['email', 'name', 'approved', 'createdAt']);
+      allow update, delete: if isWriter();
+    }
+
+    // Libros: la familia lee solo los publicados; solo Olivia escribe.
+    match /books/{bookId} {
+      allow read: if isWriter() || (isApproved() && resource.data.published == true);
+      allow write: if isWriter();
+
+      match /chapters/{id} {
+        allow read: if canRead(bookId);
+        allow write: if isWriter();
+      }
+      match /images/{id} {
+        allow read: if canRead(bookId);
+        allow write: if isWriter();
+      }
+    }
+  }
+}
