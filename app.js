@@ -1,5 +1,5 @@
 import { firebaseConfig, WRITER_EMAIL } from './firebase-config.js';
-import { sanitize, dehydrate, hydrate, esc, compressImage, wordCount } from './util.js';
+import { sanitize, dehydrate, hydrate, esc, compressImage, wordCount, COVERS, ILLUS, svgUrl, renderCover, renderIllus, botReply, BOT_CHIPS } from './util.js';
 import { openExport } from './export.js';
 
 const FB = 'https://www.gstatic.com/firebasejs/10.14.1/';
@@ -325,6 +325,7 @@ async function renderEditor(id) {
       <main class="write"><div class="toolbar big" id="tb">
         <button id="splitBtn" class="accent" title="Empieza aquí un capítulo nuevo">✂️ Capítulo nuevo aquí</button>
         <button id="helperBtn" class="accent helper" title="Te ayudo con capítulos, faltas y portada">🧚 Ayudante</button>
+        <button id="liveBtn" title="Te aviso de las faltas mientras escribes">🔤 Corrector: apagado</button>
         <button id="titBtn" title="Convierte la línea en un título grande">🔠 Título</button>
         <button data-c="bold" title="Letra gorda"><b>N</b> Negrita</button>
         <button data-c="italic" title="Letra inclinada"><i>K</i> Cursiva</button>
@@ -339,7 +340,7 @@ async function renderEditor(id) {
         </div>
         <input type="file" id="file" accept="image/*" class="hidden"></div>
       <div class="tip hidden" id="tip"><span>📚 <b>¿Tu libro es un solo texto largo?</b> Pulsa <b>🧚 Ayudante → Sugerir capítulos</b> y te digo dónde cortar. O toca en el texto y pulsa <b>✂️ Capítulo nuevo aquí</b>.</span><button id="tipX" aria-label="Cerrar">✕</button></div>
-      <div class="sheet content"><input type="text" id="chTitle" placeholder="Título del capítulo" autocomplete="off"><div id="editor" class="body" contenteditable="true" spellcheck="true" lang="es" data-ph="✏️ Escribe aquí tu historia…"></div>
+      <div class="sheet content"><div id="liveChip" class="live-chip hidden" aria-live="polite"></div><input type="text" id="chTitle" placeholder="Título del capítulo" autocomplete="off"><div id="editor" class="body" contenteditable="true" spellcheck="true" lang="es" data-ph="✏️ Escribe aquí tu historia…"></div>
       <div class="muted" id="wc" style="font-size:.8rem"></div></div></main></div>`;
   bindTopbar();
   document.execCommand('defaultParagraphSeparator', false, 'p');
@@ -361,7 +362,7 @@ async function renderEditor(id) {
   const cur = () => chapters.find(c => c.id === active);
   function show() {
     const c = cur(); ti.value = c.title || ''; ed.innerHTML = sanitize(c.html); hydrate(ed, imgs);
-    $('#wc').textContent = wordCount(ed.innerHTML) + ' palabras'; stt.textContent = ''; drawList(); hideImgTools(); emptyCheck(); tipCheck();
+    $('#wc').textContent = wordCount(ed.innerHTML) + ' palabras'; stt.textContent = ''; drawList(); hideImgTools(); emptyCheck(); tipCheck(); liveReset();
   }
   async function flush() {
     clearTimeout(timer); if (!dirty) return; dirty = false;
@@ -374,7 +375,7 @@ async function renderEditor(id) {
     } catch (e) { stt.textContent = '⚠️ No se pudo guardar'; dirty = true; console.error(e); }
   }
   const touch = () => { dirty = true; stt.textContent = '✏️ Escribiendo…'; $('#wc').textContent = wordCount(ed.innerHTML) + ' palabras'; clearTimeout(timer); timer = setTimeout(flush, 1200); };
-  ed.addEventListener('input', touch); ti.addEventListener('input', touch);
+  ed.addEventListener('input', () => { touch(); hideFix(); scheduleLive(); }); ti.addEventListener('input', touch);
   window.addEventListener('beforeunload', () => { if (dirty) flush(); });
   unsubs.push(() => { flush(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
@@ -617,26 +618,166 @@ async function renderEditor(id) {
     modal(`<h2>✅ ¿Está listo mi libro?</h2><p class="muted" style="margin:0 0 8px">${good} de ${rows.length} cosas listas</p>${rows.map(r => `<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:1.02rem"><span>${r[0]}</span><span>${r[1]}</span></div>`).join('')}<div style="text-align:right;margin-top:12px"><button class="btn primary" id="oK">Vale</button></div>`, (m, close) => { $('#oK', m).onclick = close; });
   }
 
+  async function addImage(im) {
+    let rid = null;
+    if (im.key) for (const [k, v] of imgs) if (v.key === im.key) { rid = k; break; }
+    if (!rid) {
+      const r = await addDoc(collection(db, 'books', id, 'images'), { data: im.data, w: im.w, h: im.h, key: im.key || '', createdAt: serverTimestamp() });
+      rid = r.id; imgs.set(rid, im);
+    }
+    restoreSel();
+    document.execCommand('insertHTML', false, `<img data-img="${rid}" class="sz-s" src="${imgs.get(rid).data}" alt="Ilustración"><p><br></p>`);
+    touch();
+  }
+
+  /* ----- 🖼 Portada: imagen propia o portadas de la app ----- */
   function coverModal() {
-    modal(`<h2>🖼 Portada</h2><div class="row" style="align-items:flex-start;flex-wrap:nowrap"><div class="cover" id="cvP" style="width:120px;flex:none;font-size:.8rem;border-radius:10px;${book.coverData ? `background-image:url('${book.coverData}')` : ''}">${book.coverData ? '' : esc(book.title)}</div>
-      <div style="flex:1"><p style="margin:0 0 8px">Elige un dibujo o una foto para la portada. Queda mejor si es <b>vertical</b>.</p><button class="btn primary" id="cvPick" style="width:100%;justify-content:center;font-size:1.05rem">🖼 Elegir imagen</button><button class="btn" id="cvDel" style="width:100%;justify-content:center;margin-top:8px">Quitar portada</button></div></div>
+    modal(`<h2>🖼 Portada</h2>
+      <div class="row" style="align-items:flex-start;flex-wrap:nowrap"><div class="cover" id="cvP" style="width:110px;flex:none;font-size:.75rem;border-radius:10px;${book.coverData ? `background-image:url('${book.coverData}')` : ''}">${book.coverData ? '' : esc(book.title)}</div>
+      <div style="flex:1"><p style="margin:0 0 8px">Así se ve tu portada ahora.</p><button class="btn" id="cvPick" style="width:100%;justify-content:center">📷 Usar una imagen mía</button><button class="btn" id="cvDel" style="width:100%;justify-content:center;margin-top:8px">Quitar portada</button></div></div>
+      <h3 style="margin:16px 0 2px;font-size:1.05rem">🎨 Portadas de la app</h3><p class="muted" style="margin:0 0 8px;font-size:.9rem">Llevan tu título y tu nombre. Toca una para elegirla.</p>
+      <div class="cgrid" id="cvG">${COVERS.map(c => `<button class="cthumb" data-c="${c.id}" aria-label="${esc(c.name)}"></button>`).join('')}</div>
       <input type="file" id="cvF" accept="image/*" class="hidden"><div style="text-align:right;margin-top:12px"><button class="btn" id="cvX">Cerrar</button></div>`,
       (m, close) => {
         const setCover = async data => { book.coverData = data; await updateDoc(doc(db, 'books', id), { coverData: data, updatedAt: serverTimestamp() }); const p = $('#cvP', m); p.style.backgroundImage = data ? `url('${data}')` : ''; p.textContent = data ? '' : book.title; toast('✅ Portada guardada'); };
         $('#cvX', m).onclick = close; $('#cvPick', m).onclick = () => $('#cvF', m).click(); $('#cvDel', m).onclick = () => setCover('');
         $('#cvF', m).onchange = async e => { const f = e.target.files[0]; if (!f) return; try { setCover((await compressImage(f, 900, 0.8)).data); } catch { toast('No pude usar esa imagen'); } };
+        $$('.cthumb', m).forEach(b => {
+          const d = COVERS.find(c => c.id === b.dataset.c);
+          renderCover(d, book.title, book.author, 240, 360, 0.7).then(u => { b.style.backgroundImage = `url('${u}')`; }).catch(() => {});
+          b.onclick = async () => { try { await setCover(await renderCover(d, book.title, book.author)); } catch (e) { console.error(e); toast('No pude crear la portada'); } };
+        });
       });
   }
   $('#coverBtn').onclick = coverModal;
+
+  /* ----- 🎨 Ilustraciones de la app ----- */
+  function illusModal() {
+    modal(`<h2>🎨 Ilustraciones</h2><p class="muted" style="margin:0 0 6px">Toca una para ponerla en tu texto. Después puedes hacerla más grande o más pequeña.</p>
+      <div class="igrid">${ILLUS.map(il => `<button class="ithumb" data-i="${il.id}"><img src="${svgUrl(il.svg)}" alt=""><span>${esc(il.name)}</span></button>`).join('')}</div>
+      <div style="text-align:right;margin-top:10px"><button class="btn" id="iX">Cerrar</button></div>`,
+      (m, close) => {
+        $('#iX', m).onclick = close;
+        $$('[data-i]', m).forEach(b => b.onclick = async () => {
+          const il = ILLUS.find(x => x.id === b.dataset.i); close();
+          try { await addImage(await renderIllus(il)); toast('✅ ¡Dibujo puesto!'); } catch (e) { console.error(e); toast('No pude poner el dibujo'); }
+        });
+      });
+  }
+  $('#imgBtn').onclick = () => modal(`<h2>🖼 ¿Qué dibujo quieres poner?</h2>
+    <button class="opt" data-i="mine"><span style="font-size:1.6rem">📷</span><span><b>Una foto o dibujo mío</b><small>Elígelo de tu móvil o tablet.</small></span></button>
+    <button class="opt" data-i="app"><span style="font-size:1.6rem">🎨</span><span><b>Ilustraciones de la app</b><small>Árboles, flores, estrellas… para decorar.</small></span></button>
+    <div style="text-align:right;margin-top:10px"><button class="btn" id="iX">Cerrar</button></div>`,
+    (m, close) => { $('#iX', m).onclick = close; $('[data-i=mine]', m).onclick = () => { close(); $('#file').click(); }; $('[data-i=app]', m).onclick = () => { close(); illusModal(); }; });
+
+  /* ----- 🔤 Corrector en vivo: subraya y dice si está bien o mal ----- */
+  const LT_URL = 'https://api.languagetool.org/v2/check';
+  let live = store.get('ob-live', '') === '1', liveT = null, liveBusy = false;
+  const liveErr = new Map(), chip = $('#liveChip');
+  const supportsHL = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight !== 'undefined';
+  const fix = document.createElement('div'); fix.className = 'fixpop hidden'; document.body.append(fix); unsubs.push(() => fix.remove());
+  function paintHL() {
+    if (!supportsHL) return;
+    const rs = []; liveErr.forEach((arr, blk) => { if (!ed.contains(blk) && blk !== ed) { liveErr.delete(blk); return; } arr.forEach(e => rs.push(e.r)); });
+    CSS.highlights.set('errores', new Highlight(...rs));
+  }
+  function hideFix() { fix.classList.add('hidden'); }
+  function setLiveUI() { const b = $('#liveBtn'); b.textContent = live ? '🔤 Corrector: encendido' : '🔤 Corrector: apagado'; b.classList.toggle('on', live); chip.classList.toggle('hidden', !live); if (!live) chip.textContent = ''; }
+  function liveReset() { liveErr.clear(); paintHL(); hideFix(); if (live) chip.textContent = '✍️ Escribe y te voy diciendo…'; }
+  function scheduleLive() { clearTimeout(liveT); if (live) { chip.textContent = '✍️ …'; liveT = setTimeout(liveCheck, 1800); } }
+  function currentBlock() {
+    const s = getSelection(); if (!s.rangeCount || !ed.contains(s.anchorNode)) return ed;
+    const n = s.anchorNode.nodeType === 3 ? s.anchorNode.parentElement : s.anchorNode;
+    const b = n.closest('p,div,h1,h2,h3,h4,li,blockquote'); return (b && b !== ed && ed.contains(b)) ? b : ed;
+  }
+  async function liveCheck() {
+    if (!live || liveBusy) return;
+    const blk = currentBlock(), map = textMap(blk), text = map.text.slice(0, 6000);
+    if (text.trim().length < 4) { chip.textContent = '✍️ Sigue escribiendo…'; return; }
+    liveBusy = true; chip.textContent = '🔎 Mirando…';
+    try {
+      const res = await fetch(LT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body: new URLSearchParams({ text, language: 'es', disabledCategories: 'STYLE' }) });
+      if (res.status === 429) { chip.textContent = '⏳ Un momento, descanso un poquito…'; return; }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const j = await res.json();
+      if (textMap(blk).text.slice(0, 6000) !== text) { liveBusy = false; return scheduleLive(); }
+      const arr = [];
+      for (const m of j.matches) {
+        const a = rangeAt(map, m.offset), z = rangeAt(map, m.offset + m.length); if (!a || !z) continue;
+        const r = document.createRange(); r.setStart(a.startContainer, a.startOffset); r.setEnd(z.startContainer, z.startOffset);
+        arr.push({ r, msg: m.shortMessage || m.message, reps: (m.replacements || []).slice(0, 3).map(x => x.value), word: text.slice(m.offset, m.offset + m.length) });
+      }
+      liveErr.set(blk, arr); paintHL();
+      chip.textContent = arr.length ? `⚠️ ${arr.length} cosa${arr.length > 1 ? 's' : ''} por revisar: toca la palabra subrayada` : '✅ ¡Esta parte está bien!';
+      chip.classList.toggle('bad', arr.length > 0);
+    } catch (e) { console.warn(e); chip.textContent = '🔌 Sin conexión: no puedo revisar ahora'; }
+    finally { liveBusy = false; }
+  }
+  ed.addEventListener('click', () => {
+    if (!live) return hideFix();
+    const s = getSelection(); if (!s.rangeCount) return hideFix();
+    for (const [, arr] of liveErr) for (const e of arr) {
+      let hit = false; try { hit = e.r.isPointInRange(s.anchorNode, s.anchorOffset); } catch {}
+      if (!hit) continue;
+      const rect = s.getRangeAt(0).getBoundingClientRect();
+      fix.innerHTML = `<div style="margin-bottom:4px">“<b>${esc(e.word)}</b>” <span class="muted">${esc(e.msg)}</span></div>${e.reps.map((rp, j) => `<button class="chip" data-j="${j}">${esc(rp)}</button>`).join('')}<button class="chip ghost" data-x="1">Dejar así</button>`;
+      fix.style.top = Math.min(window.innerHeight - 150, rect.bottom + 8) + 'px'; fix.style.left = Math.max(8, Math.min(window.innerWidth - 290, rect.left - 20)) + 'px'; fix.classList.remove('hidden');
+      fix.onclick = ev => {
+        const b = ev.target.closest('button'); if (!b) return;
+        if (b.dataset.j !== undefined) { e.r.deleteContents(); e.r.insertNode(document.createTextNode(e.reps[+b.dataset.j])); touch(); }
+        for (const [k, a] of liveErr) liveErr.set(k, a.filter(x => x !== e));
+        paintHL(); hideFix(); scheduleLive();
+      };
+      return;
+    }
+    hideFix();
+  });
+  $('#liveBtn').onclick = () => {
+    if (!live) {
+      if (!store.get('ob-lt', '') && !confirm('Para avisarte de las faltas mientras escribes, cada párrafo se envía a LanguageTool, un corrector gratuito de internet.\n\n¿Quieres encenderlo?')) return;
+      store.set('ob-lt', '1'); store.set('ob-live', '1'); live = true; setLiveUI(); liveCheck();
+    } else { live = false; store.set('ob-live', ''); liveErr.clear(); paintHL(); hideFix(); setLiveUI(); }
+  };
+  setLiveUI();
+
+  /* ----- ✒️ Pluma: chat de ayuda ----- */
+  const botActs = { cuts: suggestModal, spell: spellModal, ready: readyModal, cover: coverModal, illus: illusModal, live: () => $('#liveBtn').click(), read: () => { location.hash = '#/read/' + id; }, help: helpModal };
+  function botPanel() {
+    if ($('.bot')) return;
+    const el = document.createElement('div'); el.className = 'bot';
+    el.innerHTML = `<div class="bot-h"><span>✒️ <b>Pluma</b> <small class="muted">tu ayudante</small></span><button class="btn icon" id="bX" aria-label="Cerrar">✕</button></div><div class="bot-m" id="bM" aria-live="polite"></div><div class="bot-c" id="bC"></div>
+      <form class="bot-f" id="bF"><input type="text" id="bI" placeholder="Escríbeme tu pregunta…" autocomplete="off" aria-label="Tu pregunta"><button class="btn primary">Enviar</button></form>`;
+    document.body.append(el);
+    const M = $('#bM', el), C = $('#bC', el);
+    const say = (who, html) => { const d = document.createElement('div'); d.className = 'msg ' + who; d.innerHTML = html; M.append(d); M.scrollTop = M.scrollHeight; return d; };
+    const reply = input => {
+      const r = botReply(input), d = say('pl', r.html);
+      if (r.acts?.length) {
+        const row = document.createElement('div'); row.className = 'acts';
+        r.acts.forEach(([label, act]) => { const b = document.createElement('button'); b.className = 'chip'; b.textContent = label; b.onclick = () => { if (act === 'idea' || act === 'tip') return reply('#' + act); el.remove(); botActs[act]?.(); }; row.append(b); });
+        d.append(row);
+      }
+      M.scrollTop = M.scrollHeight;
+    };
+    BOT_CHIPS.forEach(([label, tid]) => { const b = document.createElement('button'); b.className = 'chip'; b.textContent = label; b.onclick = () => { say('me', esc(label)); reply('#' + tid); }; C.append(b); });
+    $('#bX', el).onclick = () => el.remove();
+    $('#bF', el).onsubmit = e => { e.preventDefault(); const i = $('#bI', el), t = i.value.trim(); if (!t) return; say('me', esc(t)); i.value = ''; reply(t); };
+    reply('#hola');
+  }
+  const fab = document.createElement('button'); fab.className = 'fab'; fab.id = 'botFab'; fab.innerHTML = '💬'; fab.title = 'Pregúntale a Pluma'; fab.setAttribute('aria-label', 'Pregúntale a Pluma');
+  fab.onclick = botPanel; document.body.append(fab); unsubs.push(() => { fab.remove(); $('.bot')?.remove(); });
+
   $('#helperBtn').onclick = () => modal(`<h2>🧚 Ayudante</h2><p style="margin:0">¿En qué te ayudo?</p>
     <button class="opt" data-h="cuts"><span style="font-size:1.6rem">💡</span><span><b>Sugerir capítulos</b><small>Te digo dónde puedes cortar tu libro.</small></span></button>
     <button class="opt" data-h="spell"><span style="font-size:1.6rem">🔤</span><span><b>Revisar ortografía</b><small>Busco faltas y te propongo la palabra correcta.</small></span></button>
     <button class="opt" data-h="ready"><span style="font-size:1.6rem">✅</span><span><b>¿Está listo mi libro?</b><small>Una lista para ver qué falta.</small></span></button>
-    <button class="opt" data-h="cover"><span style="font-size:1.6rem">🖼</span><span><b>Portada</b><small>Elige la imagen de la portada.</small></span></button>
+    <button class="opt" data-h="cover"><span style="font-size:1.6rem">🖼</span><span><b>Portada</b><small>Sube tu imagen o elige una portada de la app.</small></span></button>
+    <button class="opt" data-h="illus"><span style="font-size:1.6rem">🎨</span><span><b>Ilustraciones</b><small>Dibujos de la app para decorar tu libro.</small></span></button>
+    <button class="opt" data-h="bot"><span style="font-size:1.6rem">💬</span><span><b>Pregúntale a Pluma</b><small>Dudas, ideas para escribir y consejos.</small></span></button>
     <div style="text-align:right;margin-top:10px"><button class="btn" id="hX">Cerrar</button></div>`,
     (m, close) => {
       $('#hX', m).onclick = close;
-      $$('[data-h]', m).forEach(b => b.onclick = () => { close(); ({ cuts: suggestModal, spell: spellModal, ready: readyModal, cover: coverModal })[b.dataset.h](); });
+      $$('[data-h]', m).forEach(b => b.onclick = () => { close(); ({ cuts: suggestModal, spell: spellModal, ready: readyModal, cover: coverModal, illus: illusModal, bot: botPanel })[b.dataset.h](); });
     });
 
   /* barra de herramientas */
@@ -663,7 +804,6 @@ async function renderEditor(id) {
   }
   $('#pbBtn').onclick = () => { restoreSel(); document.execCommand('insertHTML', false, '<div class="pagebreak"></div><p><br></p>'); touch(); };
   function restoreSel() { ed.focus(); if (lastRange) { const s = getSelection(); s.removeAllRanges(); s.addRange(lastRange); } }
-  $('#imgBtn').onclick = () => $('#file').click();
   $('#file').onchange = async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     try {

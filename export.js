@@ -50,7 +50,7 @@ export async function buildDocx({ book, chapters, imgs }) {
     const it = imgs.get(el.getAttribute('data-img')); if (!it) return null;
     const cls = ['sz-s', 'sz-m', 'sz-l'].find(c => el.classList.contains(c)) || 'sz-m';
     const w = WIDTH[cls], h = Math.round(w * (it.h / it.w));
-    return new D.ImageRun({ data: dataToBytes(it.data), transformation: { width: w, height: h }, type: 'jpg' });
+    return new D.ImageRun({ data: dataToBytes(it.data), transformation: { width: w, height: h }, type: it.data.startsWith('data:image/png') ? 'png' : 'jpg' });
   };
   function inline(node, f = {}) {
     const out = [];
@@ -129,7 +129,7 @@ export async function buildEpub({ book, chapters, imgs }) {
     d.querySelectorAll('img[data-img]').forEach(i => {
       const id = i.getAttribute('data-img'), it = imgs.get(id);
       if (!it) return i.remove();
-      const name = 'img-' + id + '.jpg'; used.set(id, { name, bytes: dataToBytes(it.data) });
+      const png = it.data.startsWith('data:image/png'), name = 'img-' + id + (png ? '.png' : '.jpg'); used.set(id, { name, bytes: dataToBytes(it.data), mime: png ? 'image/png' : 'image/jpeg' });
       i.setAttribute('src', 'images/' + name); i.setAttribute('alt', 'Ilustración'); i.removeAttribute('data-img');
     });
     d.querySelectorAll('.pagebreak').forEach(p => p.setAttribute('style', 'page-break-before:always'));
@@ -155,7 +155,7 @@ export async function buildEpub({ book, chapters, imgs }) {
 <manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="css" href="style.css" media-type="text/css"/>
 <item id="title" href="titlepage.xhtml" media-type="application/xhtml+xml"/>${book.coverData ? '<item id="cover-img" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>' : ''}
 ${chapters.map((_, i) => `<item id="c${i + 1}" href="ch${i + 1}.xhtml" media-type="application/xhtml+xml"/>`).join('')}
-${[...used.entries()].map(([id, v]) => `<item id="i-${xmlEsc(id)}" href="images/${v.name}" media-type="image/jpeg"/>`).join('')}</manifest>
+${[...used.entries()].map(([id, v]) => `<item id="i-${xmlEsc(id)}" href="images/${v.name}" media-type="${v.mime}"/>`).join('')}</manifest>
 <spine><itemref idref="title"/>${chapters.map((_, i) => `<itemref idref="c${i + 1}"/>`).join('')}</spine></package>`);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip' });
 }
