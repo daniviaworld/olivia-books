@@ -444,15 +444,39 @@ export async function epubToBook(blob) {
 
 /* ----- PDF: metadatos, número de páginas y miniatura de la portada ----- */
 const badPdfTitle = t => !t || t.length < 3 || /^(microsoft word|untitled|sin t[ií]tulo|document\d*)/i.test(t) || /\.(docx?|indd|pdf|tex|rtf|odt|qxd|pub)$/i.test(t);
+/* Portada de un PDF: elige la primera página con imagen (no una hoja casi vacía) y recorta los márgenes blancos */
+async function coverOf(doc) {
+  let best = null;
+  for (let i = 1; i <= Math.min(doc.numPages, 4); i++) {
+    const page = await doc.getPage(i), v0 = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: 420 / v0.width });
+    const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+    const x = c.getContext('2d', { willReadFrequently: true }); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: x, viewport: vp }).promise;
+    const W = c.width, H = c.height, d = x.getImageData(0, 0, W, H).data; let ink = 0, x0 = W, y0 = H, x1 = 0, y1 = 0;
+    for (let y = 0; y < H; y++) for (let xx = 0; xx < W; xx++) { const o = (y * W + xx) * 4; if (d[o] < 232 || d[o + 1] < 232 || d[o + 2] < 232) { ink++; if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (y < y0) y0 = y; if (y > y1) y1 = y; } }
+    const cov = ink / (W * H);
+    if (!best || cov > best.cov) best = { c, cov, x0, y0, x1, y1, W, H };
+    if (cov >= 0.12) break;
+  }
+  const { c, W, H } = best; let { x0, y0, x1, y1 } = best;
+  const pad = Math.round(W * 0.015); x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(W, x1 + pad); y1 = Math.min(H, y1 + pad);
+  let sx = 0, sy = 0, sw = W, sh = H;
+  if (best.cov >= 0.05 && (x1 - x0) * (y1 - y0) >= 0.35 * W * H && (x1 - x0) >= 0.45 * W) { sx = x0; sy = y0; sw = x1 - x0; sh = y1 - y0; }
+  const k = Math.min(1, 320 / sw), o = document.createElement('canvas'); o.width = Math.round(sw * k); o.height = Math.round(sh * k);
+  const ox = o.getContext('2d'); ox.fillStyle = '#fff'; ox.fillRect(0, 0, o.width, o.height); ox.drawImage(c, sx, sy, sw, sh, 0, 0, o.width, o.height);
+  return o.toDataURL('image/jpeg', 0.78);
+}
+export async function pdfCover(blob) {
+  const pdfjs = await loadPdfJs(), url = URL.createObjectURL(blob);
+  try { const doc = await pdfjs.getDocument({ url }).promise; const r = await coverOf(doc); doc.destroy(); return r; } finally { URL.revokeObjectURL(url); }
+}
 export async function pdfInfo(blob) {
   const pdfjs = await loadPdfJs(), url = URL.createObjectURL(blob);
   try {
     const doc = await pdfjs.getDocument({ url }).promise;
     const md = await doc.getMetadata().catch(() => null), inf = md?.info || {};
-    const page = await doc.getPage(1), v0 = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: 320 / v0.width });
-    const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
-    await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
-    const out = { title: badPdfTitle((inf.Title || '').trim()) ? '' : inf.Title.trim(), author: /^(anonymous|an[oó]nimo|unknown|desconocid|admin|user|usuario|author|autor$|owner|pc$|windows|microsoft|calibre|adobe|root|default|none|null)/i.test((inf.Author || '').trim()) || (inf.Author || '').trim().length < 3 ? '' : (inf.Author || '').trim().slice(0, 80), pages: doc.numPages, cover: c.toDataURL('image/jpeg', 0.72) };
+    const cover = await coverOf(doc);
+    const out = { title: badPdfTitle((inf.Title || '').trim()) ? '' : inf.Title.trim(), author: /^(anonymous|an[oó]nimo|unknown|desconocid|admin|user|usuario|author|autor$|owner|pc$|windows|microsoft|calibre|adobe|root|default|none|null)/i.test((inf.Author || '').trim()) || (inf.Author || '').trim().length < 3 ? '' : (inf.Author || '').trim().slice(0, 80), pages: doc.numPages, cover };
     doc.destroy(); return out;
   } finally { URL.revokeObjectURL(url); }
 }

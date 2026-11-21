@@ -1,5 +1,5 @@
 import { firebaseConfig, WRITER_EMAIL } from './firebase-config.js';
-import { sanitize, dehydrate, hydrate, esc, compressImage, wordCount, COVERS, ILLUS, svgUrl, renderCover, renderIllus, botReply, BOT_CHIPS, libDB, parseName, normKey, epubInfo, epubToBook, pdfInfo, loadPdfJs } from './util.js';
+import { sanitize, dehydrate, hydrate, esc, compressImage, wordCount, COVERS, ILLUS, svgUrl, renderCover, renderIllus, botReply, BOT_CHIPS, libDB, parseName, normKey, epubInfo, epubToBook, pdfInfo, pdfCover, loadPdfJs } from './util.js';
 import { openExport } from './export.js';
 
 const FB = 'https://www.gstatic.com/firebasejs/10.14.1/';
@@ -201,18 +201,19 @@ window.addEventListener('hashchange', route);
 /* ---------- Biblioteca ---------- */
 let backHash = '#/shelf';
 // Libros importados: pantalla completa (sin barras). Toca el centro de la página para ver/ocultar los botones.
-const wantFs = () => { if (store.get('ob-imm', '1') !== '0') try { document.documentElement.requestFullscreen?.()?.catch?.(() => {}); } catch {} };
+const wantFs = () => { if (store.get('ob-full', '0') === '1') try { document.documentElement.requestFullscreen?.()?.catch?.(() => {}); } catch {} };
 function immersive(reader) {
   if (!reader) return;
-  let on = store.get('ob-imm', '1') !== '0';
+  let on = store.get('ob-full', '0') === '1';
   const apply = () => reader.classList.toggle('immersive', on);
   apply();
   const fs = async want => { try { if (want && !document.fullscreenElement) await document.documentElement.requestFullscreen?.(); else if (!want && document.fullscreenElement) await document.exitFullscreen(); } catch {} };
-  const btn = $('#fsBtn', reader); if (btn) btn.onclick = async () => { on = !on; store.set('ob-imm', on ? '1' : '0'); apply(); await fs(on); };
+  const btn = $('#fsBtn', reader); if (btn) btn.onclick = async () => { on = !on; store.set('ob-full', on ? '1' : '0'); apply(); await fs(on); };
   const st = $('.stage', reader);
   st?.addEventListener('click', e => {
     if (e.target.closest('a,button,input')) return;
     const r = st.getBoundingClientRect(), x = (e.clientX - r.left) / r.width;
+    if (e.target === st) { $(x < .5 ? '#prev' : '#next', reader)?.click(); return; }
     if (x > .22 && x < .78 && !String(getSelection?.() || '')) { on = !on; apply(); }
   });
   if (on && !store.get('ob-imm-hint', '')) { store.set('ob-imm-hint', '1'); toast('👆 Toca el centro de la página para ver los botones', 4500); }
@@ -1018,7 +1019,7 @@ async function importFiles(files, after) {
       } else {
         const inf = await pdfInfo(f);
         if (inf.title && !nm.series) meta.title = inf.title; if (inf.author && !meta.author) meta.author = inf.author;
-        meta.pages = inf.pages; meta.cover = inf.cover || '';
+        meta.pages = inf.pages; meta.cover = inf.cover || ''; meta.coverV = 2;
       }
       await lib.add(meta, f); sigs.add(sig); ok++;
     } catch (e) { console.error(e); fail.push(f.name); }
@@ -1043,7 +1044,18 @@ async function renderShelf() {
   async function load() {
     books = await lib.all();
     draw();
+    fixCovers();
     try { const e = await navigator.storage?.estimate?.(); $('#shnote').textContent = books.length ? `${books.length} libro${books.length > 1 ? 's' : ''} · guardados solo en este dispositivo${e?.usage ? ' · ' + (e.usage / 1048576 >= 1024 ? (e.usage / 1073741824).toFixed(1) + ' GB' : Math.round(e.usage / 1048576) + ' MB') + ' ocupados' : ''}` : ''; } catch {}
+  }
+  let fixing = false;
+  async function fixCovers() {
+    if (fixing) return; fixing = true;
+    try {
+      for (const b of books.filter(x => x.format === 'pdf' && x.coverV !== 2)) {
+        if (!$('#shelf')?.isConnected) break;
+        try { const f = await lib.file(b.id); if (f) { b.cover = await pdfCover(f) || b.cover; } b.coverV = 2; await lib.update(b); if (b.sharedId) updateDoc(doc(db, 'shared', b.sharedId), { cover: b.cover.length < 300000 ? b.cover : '' }).catch(() => {}); draw(); } catch (e) { console.warn('portada', e); b.coverV = 2; }
+      }
+    } finally { fixing = false; }
   }
   function draw() {
     const q = normKey($('#sq').value), mode = ss.value;
@@ -1252,7 +1264,7 @@ async function renderPdfReader(meta, lib, save) {
     meta.page = cur; save(cur / N);
     try {
       const page = await pdf.getPage(cur); if (my !== tk) return;
-      const v0 = page.getViewport({ scale: 1 }), k = (box.clientWidth - 2) / v0.width * zoom, vp = page.getViewport({ scale: k });
+      const v0 = page.getViewport({ scale: 1 }), k = Math.min((box.clientWidth - 2) / v0.width, (box.clientHeight - 2) / v0.height) * zoom, vp = page.getViewport({ scale: k });
       const q = Math.min(window.devicePixelRatio || 1, 3, Math.sqrt(16e6 / (vp.width * vp.height)) || 1);
       cv.width = Math.floor(vp.width * q); cv.height = Math.floor(vp.height * q); cv.style.width = Math.floor(vp.width) + 'px'; cv.style.height = Math.floor(vp.height) + 'px';
       task?.cancel(); task = page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: k * q }) });

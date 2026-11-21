@@ -392,7 +392,7 @@ input[type=search]{width:100%;border:1px solid var(--line);background:var(--surf
 
 /* visor de PDF */
 .pdfr .stage{padding:10px;align-items:stretch}
-.pdfwrap{position:relative;flex:1;max-width:1000px;overflow:auto;background:var(--page);border-radius:14px;box-shadow:0 14px 44px #4a2fc426,0 0 0 1px var(--line);text-align:center;-webkit-overflow-scrolling:touch}
+.pdfwrap{position:relative;flex:1;max-width:1400px;overflow:auto;background:var(--page);border-radius:14px;box-shadow:0 14px 44px #4a2fc426,0 0 0 1px var(--line);text-align:center;-webkit-overflow-scrolling:touch}
 .pdfwrap.zoomed{text-align:left}
 .pdfcv{display:inline-block;max-width:none;vertical-align:top}
 .pdfr .nav-zone{width:16%}
