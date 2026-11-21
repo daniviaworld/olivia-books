@@ -26,22 +26,32 @@ function download(blob, name) {
 }
 
 /* ---------------- PDF (impresión paginada con números de página) ---------------- */
-export async function exportPDF({ book, chapters, imgs }) {
+export async function exportPDF({ book, chapters, imgs }, contest = null) {
   const root = document.getElementById('print-root');
+  let cst = null;
+  if (contest) {
+    /* Formato concurso: A4, Times New Roman 12 pt, doble espacio, solo título y seudónimo */
+    cst = document.createElement('style');
+    cst.textContent = '@page{size:A4;margin:25mm 25mm 25mm}@page cover{size:A4;margin:25mm}';
+    document.head.append(cst); root.classList.add('contest');
+    root.innerHTML = `<div class="p-cover"><h1>${esc(book.title)}</h1><p>${esc(contest.pseudo)}</p></div>` +
+      chapters.map(c => `<section class="p-chap"><h2 class="p-title">${esc(c.title)}</h2>${sanitize(c.html)}</section>`).join('');
+  } else
   root.innerHTML = `<div class="p-cover">${book.coverData ? `<img src="${book.coverData}" alt="">` : ''}<h1>${esc(book.title)}</h1><p><i>${esc(book.author || '')}</i></p></div>
     <div class="p-toc"><h1 class="p-title">Índice</h1><ol>${chapters.map(c => `<li>${esc(c.title)}</li>`).join('')}</ol></div>` +
     chapters.map(c => `<section class="p-chap"><h1 class="p-title">${esc(c.title)}</h1>${sanitize(c.html)}</section>`).join('');
   hydrate(root, imgs);
   await Promise.all([...root.querySelectorAll('img')].map(i => i.decode?.().catch(() => {})));
   const prevTitle = document.title; document.title = book.title;
-  const done = () => { root.innerHTML = ''; document.title = prevTitle; window.removeEventListener('afterprint', done); };
+  const done = () => { root.innerHTML = ''; root.classList.remove('contest'); cst?.remove(); document.title = prevTitle; window.removeEventListener('afterprint', done); };
   window.addEventListener('afterprint', done);
   window.print();
 }
 
 /* ---------------- Word (.docx) ---------------- */
-export async function buildDocx({ book, chapters, imgs }) {
+export async function buildDocx({ book, chapters, imgs }, contest = null) {
   const D = await lib('docx');
+  const LINE = contest ? 480 : 300, AFT = contest ? 0 : 140;
   const A = D.AlignmentType, WIDTH = { 'sz-s': 220, 'sz-m': 380, 'sz-l': 520 };
   let listN = 0;
   const alignOf = el => ({ center: A.CENTER, right: A.RIGHT, justify: A.JUSTIFIED, left: A.LEFT }[el.style?.textAlign]);
@@ -67,7 +77,7 @@ export async function buildDocx({ book, chapters, imgs }) {
   function blocks(root, opt = {}) {
     const out = [];
     root.childNodes.forEach(n => {
-      if (n.nodeType === 3) { if (n.textContent.trim()) out.push(new D.Paragraph({ children: [new D.TextRun(n.textContent)], spacing: { after: 140 } })); return; }
+      if (n.nodeType === 3) { if (n.textContent.trim()) out.push(new D.Paragraph({ children: [new D.TextRun(n.textContent)], spacing: { after: AFT, line: LINE } })); return; }
       if (n.nodeType !== 1) return;
       const t = n.tagName;
       if (/^H[1-4]$/.test(t)) {
@@ -86,30 +96,33 @@ export async function buildDocx({ book, chapters, imgs }) {
       else {
         const runs = inline(n);
         const hasImg = !!n.querySelector('img');
-        out.push(new D.Paragraph({ children: runs.length ? runs : [new D.TextRun('')], alignment: hasImg ? A.CENTER : (alignOf(n) ?? A.JUSTIFIED), spacing: { after: 140, line: 300 } }));
+        out.push(new D.Paragraph({ children: runs.length ? runs : [new D.TextRun('')], alignment: hasImg ? A.CENTER : (alignOf(n) ?? A.JUSTIFIED), spacing: { after: AFT, line: LINE } }));
       }
     });
     return out;
   }
 
   const first = [];
-  if (book.coverData) { const w = 300, im = new Image(); im.src = book.coverData; await im.decode().catch(() => {}); const h = Math.round(w * ((im.naturalHeight || 450) / (im.naturalWidth || 300)));
+  if (contest) {
+    first.push(new D.Paragraph({ alignment: A.CENTER, spacing: { before: 4800, after: 400 }, children: [new D.TextRun({ text: book.title, bold: true, size: 48 })] }));
+    first.push(new D.Paragraph({ alignment: A.CENTER, children: [new D.TextRun({ text: contest.pseudo, size: 28 })] }));
+  } else if (book.coverData) { const w = 300, im = new Image(); im.src = book.coverData; await im.decode().catch(() => {}); const h = Math.round(w * ((im.naturalHeight || 450) / (im.naturalWidth || 300)));
     first.push(new D.Paragraph({ alignment: A.CENTER, spacing: { before: 600, after: 300 }, children: [new D.ImageRun({ data: dataToBytes(book.coverData), transformation: { width: w, height: h }, type: 'jpg' })] })); }
-  first.push(new D.Paragraph({ alignment: A.CENTER, spacing: { before: book.coverData ? 200 : 3600, after: 200 }, children: [new D.TextRun({ text: book.title, bold: true, size: 64 })] }));
-  if (book.author) first.push(new D.Paragraph({ alignment: A.CENTER, children: [new D.TextRun({ text: book.author, italics: true, size: 30 })] }));
+  if (!contest) first.push(new D.Paragraph({ alignment: A.CENTER, spacing: { before: book.coverData ? 200 : 3600, after: 200 }, children: [new D.TextRun({ text: book.title, bold: true, size: 64 })] }));
+  if (!contest && book.author) first.push(new D.Paragraph({ alignment: A.CENTER, children: [new D.TextRun({ text: book.author, italics: true, size: 30 })] }));
 
   const body = [...first];
-  chapters.forEach(c => {
-    body.push(new D.Paragraph({ heading: D.HeadingLevel.HEADING_1, pageBreakBefore: true, alignment: A.CENTER, spacing: { before: 400, after: 360 }, children: [new D.TextRun({ text: c.title, bold: true, size: 44 })] }));
+  chapters.forEach((c, ci) => {
+    body.push(new D.Paragraph({ heading: D.HeadingLevel.HEADING_1, pageBreakBefore: !contest || ci === 0, alignment: contest ? A.LEFT : A.CENTER, spacing: contest ? { before: 240, after: 0, line: 480 } : { before: 400, after: 360 }, children: [new D.TextRun({ text: c.title, bold: true, size: contest ? 24 : 44 })] }));
     body.push(...blocks(parseHtml(c.html)));
   });
 
   const docu = new D.Document({
-    creator: book.author || 'Olivia Books', title: book.title,
+    creator: contest ? contest.pseudo : (book.author || 'Olivia Books'), title: book.title,
     numbering: { config: [{ reference: 'num', levels: [{ level: 0, format: D.LevelFormat.DECIMAL, text: '%1.', alignment: A.START }] }] },
-    styles: { default: { document: { run: { font: 'Georgia', size: 24 } } } },
+    styles: { default: { document: { run: { font: contest ? 'Times New Roman' : 'Georgia', size: 24 } } }, ...(contest ? { paragraphStyles: [{ id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', next: 'Normal', run: { font: 'Times New Roman', size: 24, bold: true, color: '000000' } }, { id: 'Heading2', name: 'Heading 2', basedOn: 'Normal', next: 'Normal', run: { font: 'Times New Roman', size: 24, bold: true, color: '000000' } }] } : {}) },
     sections: [{
-      properties: { page: { margin: { top: 1300, bottom: 1300, left: 1300, right: 1300 } }, titlePage: true },
+      properties: { page: { ...(contest ? { size: { width: 11906, height: 16838 } } : {}), margin: contest ? { top: 1417, bottom: 1417, left: 1417, right: 1417 } : { top: 1300, bottom: 1300, left: 1300, right: 1300 } }, titlePage: true },
       footers: { default: new D.Footer({ children: [new D.Paragraph({ alignment: A.CENTER, children: [new D.TextRun({ children: [D.PageNumber.CURRENT] })] })] }), first: new D.Footer({ children: [new D.Paragraph('')] }) },
       children: body
     }]
@@ -180,6 +193,7 @@ export function openExport(ctx) {
     <button class="opt" data-a="pdf">📄<span><b>PDF</b><small>Con portada, índice y números de página. Elige “Guardar como PDF”.</small></span></button>
     <button class="opt" data-a="docx">📝<span><b>Word (.docx)</b><small>Editable en Word, Google Docs o LibreOffice.</small></span></button>
     <button class="opt" data-a="epub">📱<span><b>ePub</b><small>Libro electrónico para móvil, tablet o e-reader.</small></span></button>
+    <button class="opt" data-a="contest">🏆<span><b>Formato concurso</b><small>A4, Times New Roman 12, doble espacio, solo título y seudónimo.</small></span></button>
     <h4 style="margin:16px 0 0;font-size:.78rem;text-transform:uppercase;color:var(--muted)">Compartir</h4>
     <button class="opt" data-a="wa">💬<span><b>WhatsApp</b><small>Enviar el enlace al libro.</small></span></button>
     <button class="opt" data-a="tg">✈️<span><b>Telegram</b><small>Enviar el enlace al libro.</small></span></button>
@@ -193,6 +207,23 @@ export function openExport(ctx) {
     const a = b.dataset.a;
     try {
       if (a === 'close') return bg.remove();
+      if (a === 'contest') {
+        const k = 'ob-pseud-' + (book.id || book.title), m = bg.querySelector('.modal');
+        m.innerHTML = `<h2>🏆 Formato concurso</h2><p class="muted" style="margin:0 0 8px">Papel A4, letra Times New Roman de 12 puntos, doble espacio. La primera página lleva solo el título y el seudónimo: no aparece ningún nombre real en el libro.</p>
+          <label style="display:block;font-weight:700;margin-bottom:4px" for="psd">Seudónimo</label><input type="text" id="psd" maxlength="60" placeholder="Por ejemplo: Luna Valiente" value="${esc(localStorage.getItem(k) || '')}" style="width:100%;font-size:1.05rem">
+          <button class="opt" data-a="cpdf">📄<span><b>PDF para el concurso</b><small>Elige “Guardar como PDF” al imprimir.</small></span></button>
+          <button class="opt" data-a="cdocx">📝<span><b>Word para el concurso</b><small>Mismo formato, editable.</small></span></button>
+          <div style="text-align:right"><button class="btn" data-a="close">Cerrar</button></div>`;
+        return;
+      }
+      if (a === 'cpdf' || a === 'cdocx') {
+        const inp = bg.querySelector('#psd'), pseud = inp.value.trim();
+        if (!pseud) { inp.focus(); inp.style.borderColor = '#e53935'; return toast('Escribe un seudónimo'); }
+        localStorage.setItem('ob-pseud-' + (book.id || book.title), pseud);
+        const c = { pseud, pseudo: pseud };
+        if (a === 'cpdf') { bg.remove(); return await exportPDF(ctx, c); }
+        toast('Preparando Word…'); return download(await buildDocx(ctx, c), slug(book.title) + '-concurso.docx');
+      }
       if (a === 'wa') window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank', 'noopener');
       else if (a === 'tg') window.open('https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(`📖 “${book.title}” de ${book.author || 'Olivia'}`), '_blank', 'noopener');
       else if (a === 'sys') {

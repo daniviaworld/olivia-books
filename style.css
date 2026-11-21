@@ -227,3 +227,16 @@ input:focus,textarea:focus,select:focus,[contenteditable]:focus{outline:2px soli
 .bot-c .chip{flex:none;margin:0;font-size:.9rem;padding:7px 12px}
 .bot-f{flex:none;display:flex;gap:8px;padding:10px;border-top:1px solid var(--line)}
 .bot-f input{flex:1;font-size:1rem}
+
+/* Formato concurso (impresión) */
+@media print{
+  #print-root.contest{font-family:'Times New Roman',Times,serif;font-size:12pt;line-height:2;color:#000}
+  #print-root.contest .p-cover{height:auto;min-height:200mm;padding:0}
+  #print-root.contest .p-cover h1{font-size:24pt;font-family:'Times New Roman',Times,serif}
+  #print-root.contest .p-cover p{font-size:14pt}
+  #print-root.contest section.p-chap{break-before:auto}
+  #print-root.contest .p-chap:first-of-type{break-before:page}
+  #print-root.contest h2.p-title{font-size:12pt;font-weight:700;text-align:left;margin:1em 0 0}
+  #print-root.contest p{text-align:left;margin:0;font-size:12pt;line-height:2}
+  #print-root.contest img{max-height:110mm}
+}
