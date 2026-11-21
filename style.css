@@ -403,3 +403,23 @@ input[type=search]{width:100%;border:1px solid var(--line);background:var(--surf
 
 .bottombar .pg{font-size:.88rem;min-width:0;flex:none;padding:0 2px}
 .bottombar input[type=range]{min-width:40px}
+
+/* ---- Biblioteca de la familia ---- */
+.subseg{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
+.subseg a{padding:8px 14px;border-radius:12px;text-decoration:none;font-weight:700;font-size:.88rem;color:var(--text);background:var(--soft);border:2px solid transparent}
+.subseg a.on{border-color:var(--accent);background:var(--card)}
+.subseg a.fam.on{border-color:#17a589;color:#0b6b59}
+[data-theme=dark] .subseg a.fam.on,[data-theme=night] .subseg a.fam.on{color:#6fe0c5}
+.famban{display:flex;gap:12px;align-items:center;padding:12px 16px;margin-bottom:14px;border-radius:18px;background:linear-gradient(135deg,#d8f6ec,#e2eeff);color:#0b4f43}
+.famban>span{font-size:30px}.famban small{display:block;font-weight:400;opacity:.85;font-size:.85rem}
+[data-theme=dark] .famban,[data-theme=night] .famban{background:linear-gradient(135deg,#123a33,#17284a);color:#bff3e5}
+[data-theme=read] .famban{background:#e4ead9}
+.famp .shh{color:#0b7a64}
+[data-theme=dark] .famp .shh,[data-theme=night] .famp .shh{color:#6fe0c5}
+.famp .bcover{box-shadow:0 0 0 3px #17a58944}
+.bshr{position:absolute;left:6px;top:6px;background:#fffffff0;color:#0b6b59;border-radius:99px;padding:1px 6px;font-size:.78rem;font-weight:700}
+.bmeta .by{display:block;color:#0b7a64;font-size:.72rem}
+[data-theme=dark] .bmeta .by,[data-theme=night] .bmeta .by{color:#6fe0c5}
+.sharebox{display:flex;flex-direction:column;gap:6px;align-items:flex-start;margin:14px 0 0;padding:12px;border-radius:14px;background:linear-gradient(135deg,#d8f6ec55,#e2eeff55);border:2px dashed #17a58966}
+.sharebox small{color:var(--muted,#666)}
+.subseg{flex-wrap:nowrap}.subseg a{flex:1;text-align:center;font-size:.9rem;padding:9px 8px}.famp .bmeta{padding-right:30px}
