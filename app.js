@@ -318,11 +318,13 @@ async function renderEditor(id) {
   app.innerHTML = topbar(`<button class="btn drawer-btn" id="drw">☰ Capítulos</button><span class="title-mini" id="bk">${esc(book.title)}</span>`,
     `<button class="btn icon" id="helpBtn" title="Ayuda">❓</button><a class="btn" href="#/read/${id}">👁 Leer</a><button class="btn icon" id="shBtn" title="Exportar / compartir">⤴</button>`) +
     `<div class="editor"><aside class="side" id="side">
+      <button class="btn" style="width:100%;justify-content:center;margin-bottom:8px" id="coverBtn">🖼 Portada del libro</button>
       <button class="btn" style="width:100%;justify-content:center" id="bset">⚙️ Ajustes del libro</button>
       <h3>Capítulos</h3><div id="chl"></div>
       <button class="btn primary" style="width:100%;justify-content:center;margin-top:10px" id="addCh">＋ Nuevo capítulo</button><div class="muted" id="stats" style="margin-top:14px;font-size:.95rem"></div></aside>
       <main class="write"><div class="toolbar big" id="tb">
         <button id="splitBtn" class="accent" title="Empieza aquí un capítulo nuevo">✂️ Capítulo nuevo aquí</button>
+        <button id="helperBtn" class="accent helper" title="Te ayudo con capítulos, faltas y portada">🧚 Ayudante</button>
         <button id="titBtn" title="Convierte la línea en un título grande">🔠 Título</button>
         <button data-c="bold" title="Letra gorda"><b>N</b> Negrita</button>
         <button data-c="italic" title="Letra inclinada"><i>K</i> Cursiva</button>
@@ -336,7 +338,7 @@ async function renderEditor(id) {
           <button data-c="insertUnorderedList">• Lista</button><button data-c="insertOrderedList">1. Lista</button><button id="qBtn">❝ Cita</button><button data-c="redo">↷ Rehacer</button><button id="mergeBtn">⛓ Unir con el capítulo de antes</button>
         </div>
         <input type="file" id="file" accept="image/*" class="hidden"></div>
-      <div class="tip hidden" id="tip"><span>📚 <b>¿Tu libro es un solo texto largo?</b> Toca en el texto justo donde empieza un capítulo y pulsa <b>✂️ Capítulo nuevo aquí</b>.</span><button id="tipX" aria-label="Cerrar">✕</button></div>
+      <div class="tip hidden" id="tip"><span>📚 <b>¿Tu libro es un solo texto largo?</b> Pulsa <b>🧚 Ayudante → Sugerir capítulos</b> y te digo dónde cortar. O toca en el texto y pulsa <b>✂️ Capítulo nuevo aquí</b>.</span><button id="tipX" aria-label="Cerrar">✕</button></div>
       <div class="sheet content"><input type="text" id="chTitle" placeholder="Título del capítulo" autocomplete="off"><div id="editor" class="body" contenteditable="true" spellcheck="true" lang="es" data-ph="✏️ Escribe aquí tu historia…"></div>
       <div class="muted" id="wc" style="font-size:.8rem"></div></div></main></div>`;
   bindTopbar();
@@ -454,6 +456,189 @@ async function renderEditor(id) {
     await b.commit(); active = prev.id; show(); toast('✅ Capítulos unidos');
   };
 
+  /* ================= 🧚 AYUDANTE ================= */
+  function textMap(root) {
+    const nodes = []; let text = '', last = null, n;
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    while ((n = w.nextNode())) {
+      const blk = n.parentElement.closest('p,div,h1,h2,h3,h4,li,blockquote') || root;
+      if (last && blk !== last && !text.endsWith('\n')) text += '\n';
+      last = blk; nodes.push({ n, start: text.length }); text += n.nodeValue;
+    }
+    return { text, nodes };
+  }
+  function rangeAt(map, off) {
+    for (const it of map.nodes) if (off >= it.start && off <= it.start + it.n.nodeValue.length) {
+      const r = document.createRange(); r.setStart(it.n, off - it.start); r.collapse(true); return r;
+    }
+    return null;
+  }
+  const STRONG = /^[¡¿"«\s]*(al día siguiente|a la mañana siguiente|por la mañana|por la tarde|por la noche|esa noche|aquella noche|esa mañana|aquella mañana|esa tarde|una noche|una mañana|una tarde|un día|otro día|el día siguiente|al otro día|al amanecer|al anochecer|al atardecer|al cabo de|después de|más tarde|mientras tanto|poco después|días después|semanas después|meses después|años después|dos días|tres días|una semana|un mes|un año|al llegar|en ese momento|capítulo)\b/i;
+  const WEAK = /^[¡¿"«\s]*(de repente|de pronto|entonces|al final|por fin|finalmente|por último)\b/i;
+
+  /** Busca buenos sitios para cortar: cambios de momento, párrafos nuevos y capítulos de tamaño parecido. */
+  function suggestCuts(map) {
+    const T = map.text, starts = [...T.matchAll(/\S+/g)].map(m => m.index), total = starts.length;
+    if (total < 260) return { total, cuts: [] };
+    const wordsBefore = off => { let lo = 0, hi = total; while (lo < hi) { const mid = (lo + hi) >> 1; if (starts[mid] < off) lo = mid + 1; else hi = mid; } return lo; };
+    const cands = new Map();
+    const add = (off, props) => { const c = cands.get(off) || { off, para: false, blank: false }; Object.assign(c, props); cands.set(off, c); };
+    for (const m of T.matchAll(/\n+(?=\S)/g)) add(m.index + m[0].length, { para: true, blank: m[0].length > 1 });
+    for (const m of T.matchAll(/[.!?…]["»”)]*[ \t]+(?=[A-ZÁÉÍÓÚÑ¡¿"«])/g)) add(m.index + m[0].length, {});
+    const list = [...cands.values()].map(c => {
+      const after = T.slice(c.off, c.off + 90);
+      let signal = 0, kind = 'frase';
+      if (STRONG.test(after)) { signal += 3; kind = 'tiempo'; } else if (WEAK.test(after)) { signal += 1.5; kind = 'tiempo'; }
+      if (c.para) { signal += 1.2; if (kind === 'frase') kind = 'parrafo'; }
+      if (c.blank) signal += 0.8;
+      return { ...c, signal, kind, wb: wordsBefore(c.off) };
+    }).filter(c => c.wb > 40 && c.wb < total - 40);
+    const n = Math.max(2, Math.round(total / 420)), W = total / n, cuts = [];
+    let prev = 0;
+    for (let k = 1; k < n; k++) {
+      const target = k * W;
+      const pool = list.filter(c => c.wb > prev + W * 0.5 && c.wb < total - W * 0.4);
+      if (!pool.length) break;
+      const near = pool.filter(c => Math.abs(c.wb - target) < W * 0.4);
+      const use = near.length ? near : pool;
+      use.sort((a, b) => (b.signal - Math.abs(b.wb - target) / W * 2.5) - (a.signal - Math.abs(a.wb - target) / W * 2.5));
+      const best = use[0]; cuts.push(best); prev = best.wb;
+    }
+    return { total, cuts: cuts.map(c => {
+      const before = T.slice(Math.max(0, c.off - 70), c.off).replace(/\n/g, ' ').trim().split(/\s+/).slice(-8).join(' ');
+      const after = T.slice(c.off, c.off + 110).replace(/\n/g, ' ').trim().split(/\s+/).slice(0, 10).join(' ');
+      const why = c.kind === 'tiempo' ? '⏰ Aquí cambia el momento de la historia' : c.kind === 'parrafo' ? '📄 Empieza un párrafo nuevo' : '✍️ Final de una frase: buen sitio para descansar';
+      return { off: c.off, before, after, why, words: c.wb };
+    }) };
+  }
+
+  async function applyCuts(cuts, map) {
+    dirty = true; await flush();
+    const i = chapters.findIndex(c => c.id === active);
+    const made = [];
+    for (const c of [...cuts].reverse()) {
+      const r = rangeAt(map, c.off); if (!r) continue;
+      const post = r.cloneRange(); post.setEnd(ed, ed.childNodes.length);
+      const tmp = document.createElement('div'); tmp.append(post.extractContents());
+      while (tmp.firstElementChild && tmp.firstElementChild.tagName === 'P' && !hasContent(tmp.firstElementChild)) tmp.firstElementChild.remove();
+      made.unshift({ title: c.title, html: dehydrate(tmp.innerHTML) });
+    }
+    while (ed.lastElementChild && ed.lastElementChild.tagName !== 'IMG' && !ed.lastElementChild.classList.contains('pagebreak') && !hasContent(ed.lastElementChild)) ed.lastElementChild.remove();
+    dirty = true; await flush();
+    for (let k = 0; k < made.length; k++) {
+      const nc = { title: made[k].title, html: made[k].html, order: i + 2 + k };
+      const ref = await addDoc(collection(db, 'books', id, 'chapters'), { title: nc.title, html: nc.html, order: nc.order, updatedAt: serverTimestamp() });
+      nc.id = ref.id; chapters.splice(i + 1 + k, 0, nc);
+    }
+    const b = writeBatch(db); chapters.forEach((c, k) => { c.order = k + 1; b.update(doc(db, 'books', id, 'chapters', c.id), { order: c.order }); });
+    await b.commit(); show();
+    toast(`✅ ¡Listo! Ahora tienes ${chapters.length} capítulos`);
+  }
+
+  function suggestModal() {
+    const map = textMap(ed), { total, cuts } = suggestCuts(map);
+    if (!cuts.length) return modal(`<h2>💡 Sugerir capítulos</h2><p style="font-size:1.05rem">Tu texto todavía es corto (${total} palabras). Cuando lleve unas 300 palabras o más, te propongo dónde cortarlo en capítulos. ¡Sigue escribiendo! ✍️</p><div style="text-align:right"><button class="btn primary" id="oK">Vale</button></div>`, (m, close) => { $('#oK', m).onclick = close; });
+    const first = chapters.findIndex(c => c.id === active);
+    modal(`<h2>💡 Te propongo ${cuts.length} cortes</h2><p class="muted" style="margin:0 0 6px">Tu texto tiene ${total} palabras. El <b>✂️</b> marca dónde empezaría cada capítulo nuevo. Quita la marca de los que no quieras.</p>
+      ${cuts.map((c, k) => `<div class="sug"><label style="display:flex;gap:8px;align-items:center;margin:0;color:var(--text);font-weight:700"><input type="checkbox" data-k="${k}" checked style="width:22px;height:22px"> Capítulo ${first + 2 + k}</label>
+        <div class="ctx muted">…${esc(c.before)} <mark>✂️</mark> <b style="color:var(--text)">${esc(c.after)}…</b></div>
+        <div style="font-size:.88rem;margin:4px 0">${c.why}</div>
+        <input type="text" data-t="${k}" value="Capítulo ${first + 2 + k}" aria-label="Nombre del capítulo"></div>`).join('')}
+      <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" id="sgX">Ahora no</button><button class="btn primary" id="sgOk" style="font-size:1.05rem">✂️ Crear capítulos</button></div>`,
+      (m, close) => {
+        $('#sgX', m).onclick = close;
+        $('#sgOk', m).onclick = async () => {
+          const chosen = cuts.map((c, k) => ({ ...c, k, on: $(`[data-k="${k}"]`, m).checked, title: $(`[data-t="${k}"]`, m).value.trim() })).filter(c => c.on)
+            .map((c, n) => ({ ...c, title: (!c.title || c.title === 'Capítulo ' + (first + 2 + c.k)) ? 'Capítulo ' + (first + 2 + n) : c.title }));
+          close(); if (chosen.length) await applyCuts(chosen, map); else toast('No elegiste ningún corte');
+        };
+      });
+  }
+
+  async function spellModal() {
+    if (!store.get('ob-lt', '') && !confirm('Para revisar la ortografía, el texto se envía a LanguageTool, un corrector gratuito de internet.\n\n¿Quieres continuar?')) return;
+    store.set('ob-lt', '1');
+    const map = textMap(ed), text = map.text;
+    if (!text.trim()) return toast('Escribe algo primero ✍️');
+    toast('🔤 Revisando tu texto…', 6000);
+    const matches = [];
+    try {
+      let start = 0;
+      while (start < text.length) {
+        let end = Math.min(text.length, start + 12000);
+        if (end < text.length) { const nl = text.lastIndexOf('\n', end); if (nl > start + 2000) end = nl; }
+        const res = await fetch('https://api.languagetool.org/v2/check', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body: new URLSearchParams({ text: text.slice(start, end), language: 'es', disabledCategories: 'STYLE' }) });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        (await res.json()).matches.forEach(m => matches.push({ ...m, offset: m.offset + start }));
+        start = end;
+      }
+    } catch (e) { console.warn(e); return toast('No pude conectar con el corrector. Mientras tanto, mira los subrayados rojos 😉', 4500); }
+    const items = [];
+    for (const m of matches.slice(0, 60)) {
+      const a = rangeAt(map, m.offset), z = rangeAt(map, m.offset + m.length); if (!a || !z) continue;
+      const r = document.createRange(); r.setStart(a.startContainer, a.startOffset); r.setEnd(z.startContainer, z.startOffset);
+      items.push({ r, word: text.slice(m.offset, m.offset + m.length), msg: m.shortMessage || m.message, reps: (m.replacements || []).slice(0, 3).map(x => x.value) });
+    }
+    if (!items.length) return modal(`<h2>🎉 ¡Sin faltas!</h2><p style="font-size:1.05rem">No encontré ninguna falta. ¡Qué buen trabajo!</p><div style="text-align:right"><button class="btn primary" id="oK">Genial</button></div>`, (m, close) => { $('#oK', m).onclick = close; });
+    modal(`<h2>🔤 He encontrado ${items.length} cosas</h2><p class="muted" style="margin:0 0 6px">Toca la palabra correcta para cambiarla.</p><div id="spl">${items.map((it, k) => `<div class="sug" data-k="${k}"><div>“<mark>${esc(it.word)}</mark>” <span class="muted">${esc(it.msg)}</span></div>
+      <div>${it.reps.map((rp, j) => `<button class="chip" data-r="${k}:${j}">${esc(rp)}</button>`).join('')}<button class="chip ghost" data-s="${k}">Dejar así</button></div></div>`).join('')}</div>
+      <div style="text-align:right;margin-top:12px"><button class="btn primary" id="spOk">Terminar</button></div>`,
+      (m, close) => {
+        $('#spOk', m).onclick = close;
+        const done = k => { $(`.sug[data-k="${k}"]`, m)?.remove(); if (!$('.sug', m)) { close(); toast('🎉 ¡Todo revisado!'); } };
+        m.addEventListener('click', e => {
+          const b = e.target.closest('button'); if (!b) return;
+          if (b.dataset.s) return done(b.dataset.s);
+          if (b.dataset.r) { const [k, j] = b.dataset.r.split(':').map(Number), it = items[k]; it.r.deleteContents(); it.r.insertNode(document.createTextNode(it.reps[j])); touch(); done(k); }
+        });
+      });
+  }
+
+  function readyModal() {
+    const rows = [], ok = (t) => rows.push(['✅', t]), tip = (t) => rows.push(['💡', t]);
+    book.coverData ? ok('Tiene portada') : tip('Falta la <b>portada</b>: pulsa 🖼 Portada del libro');
+    book.title && book.title !== 'Sin título' ? ok('Tiene título: “' + esc(book.title) + '”') : tip('Ponle un <b>título</b> al libro en ⚙️ Ajustes');
+    book.author ? ok('Aparece la autora: ' + esc(book.author)) : tip('Escribe el <b>nombre de la autora</b> en ⚙️ Ajustes');
+    chapters.length >= 2 ? ok(`Tiene ${chapters.length} capítulos`) : tip('Solo tiene 1 capítulo: prueba 🧚 Ayudante → <b>Sugerir capítulos</b>');
+    const unnamed = chapters.filter(c => /^Capítulo \d+$/.test(c.title || '')).length;
+    unnamed && chapters.length > 1 ? tip(`${unnamed} capítulo${unnamed > 1 ? 's' : ''} con el nombre por defecto (“Capítulo 2”…). ¡Ponles un nombre bonito!`) : chapters.length > 1 && ok('Todos los capítulos tienen nombre');
+    chapters.forEach(c => {
+      const h = c.id === active ? ed.innerHTML : (c.html || ''), w = wordCount(h);
+      if (w > 1500) tip(`“${esc(c.title)}” es muy largo (${w} palabras). Prueba a cortarlo con ✂️`);
+      else if (w < 60 && chapters.length > 1) tip(`“${esc(c.title)}” es muy cortito (${w} palabras)`);
+      const d = document.createElement('div'); d.innerHTML = h;
+      if ([...d.querySelectorAll('p,div')].some(p => (p.textContent || '').length > 1100)) tip(`En “${esc(c.title)}” hay un párrafo larguísimo: pulsa <b>Enter</b> para separarlo`);
+    });
+    const imgs = chapters.reduce((a, c) => a + ((c.id === active ? ed.innerHTML : c.html || '').match(/data-img=/g) || []).length, 0);
+    imgs ? ok(`Tiene ${imgs} ilustración${imgs > 1 ? 'es' : ''}`) : tip('Aún no tiene <b>dibujos</b>: ¡con 🖼 Dibujo queda más bonito!');
+    tip('Pasa el corrector: 🧚 Ayudante → <b>Revisar ortografía</b>');
+    book.published ? ok('La familia ya puede leerlo') : tip('Cuando esté listo, actívalo en ⚙️ Ajustes → <b>Dejar que la familia lo lea</b>');
+    const good = rows.filter(r => r[0] === '✅').length;
+    modal(`<h2>✅ ¿Está listo mi libro?</h2><p class="muted" style="margin:0 0 8px">${good} de ${rows.length} cosas listas</p>${rows.map(r => `<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:1.02rem"><span>${r[0]}</span><span>${r[1]}</span></div>`).join('')}<div style="text-align:right;margin-top:12px"><button class="btn primary" id="oK">Vale</button></div>`, (m, close) => { $('#oK', m).onclick = close; });
+  }
+
+  function coverModal() {
+    modal(`<h2>🖼 Portada</h2><div class="row" style="align-items:flex-start;flex-wrap:nowrap"><div class="cover" id="cvP" style="width:120px;flex:none;font-size:.8rem;border-radius:10px;${book.coverData ? `background-image:url('${book.coverData}')` : ''}">${book.coverData ? '' : esc(book.title)}</div>
+      <div style="flex:1"><p style="margin:0 0 8px">Elige un dibujo o una foto para la portada. Queda mejor si es <b>vertical</b>.</p><button class="btn primary" id="cvPick" style="width:100%;justify-content:center;font-size:1.05rem">🖼 Elegir imagen</button><button class="btn" id="cvDel" style="width:100%;justify-content:center;margin-top:8px">Quitar portada</button></div></div>
+      <input type="file" id="cvF" accept="image/*" class="hidden"><div style="text-align:right;margin-top:12px"><button class="btn" id="cvX">Cerrar</button></div>`,
+      (m, close) => {
+        const setCover = async data => { book.coverData = data; await updateDoc(doc(db, 'books', id), { coverData: data, updatedAt: serverTimestamp() }); const p = $('#cvP', m); p.style.backgroundImage = data ? `url('${data}')` : ''; p.textContent = data ? '' : book.title; toast('✅ Portada guardada'); };
+        $('#cvX', m).onclick = close; $('#cvPick', m).onclick = () => $('#cvF', m).click(); $('#cvDel', m).onclick = () => setCover('');
+        $('#cvF', m).onchange = async e => { const f = e.target.files[0]; if (!f) return; try { setCover((await compressImage(f, 900, 0.8)).data); } catch { toast('No pude usar esa imagen'); } };
+      });
+  }
+  $('#coverBtn').onclick = coverModal;
+  $('#helperBtn').onclick = () => modal(`<h2>🧚 Ayudante</h2><p style="margin:0">¿En qué te ayudo?</p>
+    <button class="opt" data-h="cuts"><span style="font-size:1.6rem">💡</span><span><b>Sugerir capítulos</b><small>Te digo dónde puedes cortar tu libro.</small></span></button>
+    <button class="opt" data-h="spell"><span style="font-size:1.6rem">🔤</span><span><b>Revisar ortografía</b><small>Busco faltas y te propongo la palabra correcta.</small></span></button>
+    <button class="opt" data-h="ready"><span style="font-size:1.6rem">✅</span><span><b>¿Está listo mi libro?</b><small>Una lista para ver qué falta.</small></span></button>
+    <button class="opt" data-h="cover"><span style="font-size:1.6rem">🖼</span><span><b>Portada</b><small>Elige la imagen de la portada.</small></span></button>
+    <div style="text-align:right;margin-top:10px"><button class="btn" id="hX">Cerrar</button></div>`,
+    (m, close) => {
+      $('#hX', m).onclick = close;
+      $$('[data-h]', m).forEach(b => b.onclick = () => { close(); ({ cuts: suggestModal, spell: spellModal, ready: readyModal, cover: coverModal })[b.dataset.h](); });
+    });
+
   /* barra de herramientas */
   $('#tb').addEventListener('mousedown', e => { if (!e.target.matches('select,input')) e.preventDefault(); });
   $$('[data-c]').forEach(b => b.onclick = () => { ed.focus(); document.execCommand(b.dataset.c); touch(); });
@@ -470,7 +655,8 @@ async function renderEditor(id) {
       <p>2️⃣ ✂️ <b>Pon capítulos</b>: toca en el texto justo donde empieza un capítulo y pulsa <b>Capítulo nuevo aquí</b>. Repítelo las veces que quieras.</p>
       <p>3️⃣ 🔠 <b>Títulos</b>: pon el cursor en una línea y pulsa <b>Título</b> para hacerla grande.</p>
       <p>4️⃣ 🖼 <b>Dibujos</b>: añade fotos o dibujos. Toca la imagen para cambiar su tamaño.</p>
-      <p>5️⃣ 👁 <b>Leer</b>: mira tu libro con portada, índice y números de página.</p>
+      <p>5️⃣ 🧚 <b>Ayudante</b>: te sugiere dónde cortar los capítulos, busca faltas de ortografía y te dice si tu libro está listo.</p>
+      <p>6️⃣ 👁 <b>Leer</b>: mira tu libro con portada, índice y números de página.</p>
       <p>↶ <b>Deshacer</b> arregla cualquier error. Si cortas mal un capítulo, abre <b>➕ Más</b> y pulsa <b>Unir</b>.</p></div>
       <div style="text-align:right;margin-top:10px"><button class="btn primary" id="hOk" style="font-size:1.1rem">¡Entendido!</button></div>`,
       (m, close) => { $('#hOk', m).onclick = close; });

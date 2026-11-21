@@ -193,3 +193,11 @@ input:focus,textarea:focus,select:focus,[contenteditable]:focus{outline:2px soli
 .tip span{flex:1}.tip button{border:0;background:none;font-size:1.1rem;padding:2px 6px}
 .logo-img{width:30px;height:30px;border-radius:8px;display:block}
 .hero .logo-img{width:84px;height:84px;border-radius:22px;margin:0 auto 10px}
+
+.toolbar.big button.accent{flex-basis:calc(50% - 6px)}
+.toolbar.big button.accent.helper{background:#ff5c8a;border-color:#ff5c8a}
+.sug{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-top:8px;background:var(--bg)}
+.sug .ctx{font-family:var(--font-body);font-size:.98rem;margin:6px 0;line-height:1.5}
+.sug mark{background:var(--accent);color:#fff;border-radius:4px;padding:0 4px}
+.chip{padding:9px 14px;border:2px solid var(--accent);border-radius:99px;background:var(--surface);margin:6px 6px 0 0;font-size:1.02rem;font-weight:600}
+.chip.ghost{border-color:var(--line);color:var(--muted);font-weight:400}
