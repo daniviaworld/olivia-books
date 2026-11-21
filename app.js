@@ -278,7 +278,7 @@ async function renderReader(id) {
     if (!pager.isConnected) return;
     const ratio = total > 1 ? cur / (total - 1) : 0;
     W = pager.clientWidth;
-    pages.style.setProperty('--ph', (pager.clientHeight - 52) + 'px');
+    pages.style.setProperty('--ph', (pager.clientHeight - 60) + 'px');
     fitImages();
     total = Math.max(1, Math.ceil(pager.scrollWidth / W - 0.02));
     const pr = pages.getBoundingClientRect().left;
@@ -340,32 +340,30 @@ async function renderEditor(id) {
       <button class="btn" style="width:100%;justify-content:center" id="bset">⚙️ Ajustes del libro</button>
       <h3>Capítulos</h3><div id="chl"></div>
       <button class="btn primary" style="width:100%;justify-content:center;margin-top:10px" id="addCh">＋ Nuevo capítulo</button><div class="muted" id="stats" style="margin-top:14px;font-size:.95rem"></div></aside>
-      <main class="write"><div class="toolbar big" id="tb">
-        <button id="splitBtn" class="accent" title="Empieza aquí un capítulo nuevo">✂️ Capítulo nuevo aquí</button>
-        <button id="helperBtn" class="accent helper" title="Te ayudo con capítulos, faltas y portada">🧚 Ayudante</button>
-        <button id="liveBtn" title="Te aviso de las faltas mientras escribes">🔤 Corrector: apagado</button>
-        <button id="titBtn" title="Convierte la línea en un título grande">🔠 Título</button>
-        <button data-c="bold" title="Letra gorda"><b>N</b> Negrita</button>
-        <button data-c="italic" title="Letra inclinada"><i>K</i> Cursiva</button>
-        <button id="imgBtn" title="Poner un dibujo o una foto">🖼 Dibujo</button>
-        <button id="pbBtn" title="Empezar una hoja nueva">📄 Hoja nueva</button>
-        <button data-c="undo" title="Deshacer lo último">↶ Deshacer</button>
-        <button id="moreBtn">➕ Más</button>
-        <span class="status" id="stt"></span>
-        <div class="more hidden" id="more">
-          <button data-c="underline"><u>S</u> Subrayado</button><button data-c="justifyLeft">⯇ Izquierda</button><button data-c="justifyCenter">≡ Centro</button><button data-c="justifyRight">⯈ Derecha</button>
-          <button data-c="insertUnorderedList">• Lista</button><button data-c="insertOrderedList">1. Lista</button><button id="qBtn">❝ Cita</button><button data-c="redo">↷ Rehacer</button><button id="mergeBtn">⛓ Unir con el capítulo de antes</button>
-        </div>
-        <input type="file" id="file" accept="image/*" class="hidden"></div>
+      <main class="write"><div class="pgbar" id="pgbar"><div class="pgpill" id="pgInfo">📄 Página <b>1</b> de <b>1</b></div><div class="pgchap" id="pgChap"></div><span class="status" id="stt"></span></div>
       <div class="tip hidden" id="tip"><span>📚 <b>¿Tu libro es un solo texto largo?</b> Pulsa <b>🧚 Ayudante → Sugerir capítulos</b> y te digo dónde cortar. O toca en el texto y pulsa <b>✂️ Capítulo nuevo aquí</b>.</span><button id="tipX" aria-label="Cerrar">✕</button></div>
       <div class="sheet content"><div id="liveChip" class="live-chip hidden" aria-live="polite"></div><input type="text" id="chTitle" placeholder="Título del capítulo" autocomplete="off"><div id="editor" class="body" contenteditable="true" spellcheck="true" lang="es" data-ph="✏️ Escribe aquí tu historia…"></div>
-      <div class="muted" id="wc" style="font-size:.8rem"></div></div></main></div>`;
+      <div class="muted" id="wc" style="font-size:.85rem"></div></div><div class="dock" id="tb">
+        <button id="splitBtn" class="d-main" title="Empieza aquí un capítulo nuevo"><i>✂️</i><span>Capítulo nuevo</span></button>
+        <button id="helperBtn" class="d-pink" title="Te ayudo con capítulos, faltas y portada"><i>🧚</i><span>Ayudante</span></button>
+        <button id="imgBtn" title="Poner un dibujo o una foto"><i>🖼</i><span>Dibujo</span></button>
+        <button id="titBtn" title="Convierte la línea en un título grande"><i>🔠</i><span>Título</span></button>
+        <button data-c="undo" title="Deshacer lo último"><i>↶</i><span>Deshacer</span></button>
+        <button id="moreBtn" title="Más cosas"><i>➕</i><span>Más</span></button>
+        <div class="more hidden" id="more">
+          <button data-c="bold" title="Letra gorda"><i><b>N</b></i><span>Negrita</span></button><button data-c="italic" title="Letra inclinada"><i><em>K</em></i><span>Cursiva</span></button><button data-c="underline"><i><u>S</u></i><span>Subrayado</span></button>
+          <button id="pbBtn" title="Empezar una hoja nueva"><i>📄</i><span>Hoja nueva</span></button><button id="liveBtn" title="Te aviso de las faltas mientras escribes">🔤 Corrector: apagado</button><button id="qBtn"><i>❝</i><span>Cita</span></button>
+          <button data-c="justifyLeft"><i>⯇</i><span>Izquierda</span></button><button data-c="justifyCenter"><i>≡</i><span>Centro</span></button><button data-c="justifyRight"><i>⯈</i><span>Derecha</span></button>
+          <button data-c="insertUnorderedList"><i>•</i><span>Lista</span></button><button data-c="insertOrderedList"><i>1.</i><span>Lista 1,2,3</span></button><button data-c="redo"><i>↷</i><span>Rehacer</span></button>
+          <button id="mergeBtn" class="wide"><i>⛓</i><span>Unir con el capítulo de antes</span></button>
+        </div>
+        <input type="file" id="file" accept="image/*" class="hidden"></div></main></div>`;
   bindTopbar();
   document.execCommand('defaultParagraphSeparator', false, 'p');
   const ed = $('#editor'), ti = $('#chTitle'), stt = $('#stt');
 
   const drawList = () => {
-    $('#chl').innerHTML = chapters.map((c, i) => `<div class="chap ${c.id === active ? 'on' : ''}" data-id="${c.id}"><span class="t">${i + 1}. ${esc(c.title || 'Sin título')}</span>
+    $('#chl').innerHTML = chapters.map((c, i) => `<div class="chap ${c.id === active ? 'on' : ''}" data-id="${c.id}"><span class="t">${i + 1}. ${esc(c.title || 'Sin título')}</span><span class="pn">${starts[c.id] ? 'p. ' + starts[c.id] : ''}</span>
       <button data-up="${c.id}" title="Subir" ${i === 0 ? 'disabled' : ''}>▲</button><button data-dn="${c.id}" title="Bajar" ${i === chapters.length - 1 ? 'disabled' : ''}>▼</button><button data-del="${c.id}" title="Borrar">🗑</button></div>`).join('');
     const words = chapters.reduce((a, c) => a + wordCount(c.html || ''), 0);
     $('#stats').innerHTML = `📖 ${chapters.length} capítulo${chapters.length === 1 ? '' : 's'}<br>✍️ ${words} palabras<br>📄 unas ${Math.max(1, Math.ceil(words / 170))} páginas`;
@@ -380,19 +378,24 @@ async function renderEditor(id) {
   const cur = () => chapters.find(c => c.id === active);
   function show() {
     const c = cur(); ti.value = c.title || ''; ed.innerHTML = sanitize(c.html); hydrate(ed, imgs);
-    $('#wc').textContent = wordCount(ed.innerHTML) + ' palabras'; stt.textContent = ''; drawList(); hideImgTools(); emptyCheck(); tipCheck(); liveReset();
+    $('#wc').textContent = wordCount(ed.innerHTML) + ' palabras'; stt.textContent = ''; drawList(); hideImgTools(); emptyCheck(); tipCheck(); liveReset(); schedPages(150);
   }
   async function flush() {
     clearTimeout(timer); if (!dirty) return; dirty = false;
     const c = cur(); if (!c) return;
-    c.title = ti.value.trim() || 'Sin título'; c.html = dehydrate(ed.innerHTML);
     try {
-      await setDoc(doc(db, 'books', id, 'chapters', c.id), { title: c.title, html: c.html, order: c.order, updatedAt: serverTimestamp() }, { merge: true });
-      await updateDoc(doc(db, 'books', id), { updatedAt: serverTimestamp() });
-      stt.textContent = '✅ Todo guardado'; drawList();
+      c.title = ti.value.trim() || 'Sin título'; c.html = dehydrate(ed.innerHTML);
+      stt.textContent = '💾 Guardando…';
+      const slow = setTimeout(() => { if (!dirty && stt.textContent === '💾 Guardando…') stt.textContent = '📱 Guardado aquí (se subirá con la conexión)'; }, 2500);
+      // el guardado local es inmediato; la confirmación del servidor puede tardar
+      Promise.all([
+        setDoc(doc(db, 'books', id, 'chapters', c.id), { title: c.title, html: c.html, order: c.order, updatedAt: serverTimestamp() }, { merge: true }),
+        updateDoc(doc(db, 'books', id), { updatedAt: serverTimestamp() })
+      ]).then(() => { clearTimeout(slow); if (!dirty) stt.textContent = '✅ Todo guardado'; drawList(); })
+        .catch(e => { clearTimeout(slow); stt.textContent = '⚠️ No se pudo guardar'; dirty = true; console.error(e); });
     } catch (e) { stt.textContent = '⚠️ No se pudo guardar'; dirty = true; console.error(e); }
   }
-  const touch = () => { dirty = true; stt.textContent = '✏️ Escribiendo…'; $('#wc').textContent = wordCount(ed.innerHTML) + ' palabras'; clearTimeout(timer); timer = setTimeout(flush, 1200); };
+  const touch = () => { dirty = true; stt.textContent = '✏️ Escribiendo…'; $('#wc').textContent = wordCount(ed.innerHTML) + ' palabras'; clearTimeout(timer); timer = setTimeout(flush, 1200); schedPages(); };
   ed.addEventListener('input', () => { touch(); hideFix(); scheduleLive(); }); ti.addEventListener('input', touch);
   window.addEventListener('beforeunload', () => { if (dirty) flush(); });
   unsubs.push(() => { flush(); });
@@ -709,7 +712,8 @@ async function renderEditor(id) {
     const b = n.closest('p,div,h1,h2,h3,h4,li,blockquote'); return (b && b !== ed && ed.contains(b)) ? b : ed;
   }
   async function liveCheck() {
-    if (!live || liveBusy) return;
+    if (!live) return;
+    if (liveBusy) { liveT = setTimeout(liveCheck, 1500); return; }
     const blk = currentBlock(), map = textMap(blk), text = map.text.slice(0, 6000);
     if (text.trim().length < 4) { chip.textContent = '✍️ Sigue escribiendo…'; return; }
     liveBusy = true; chip.textContent = '🔎 Mirando…';
@@ -798,12 +802,48 @@ async function renderEditor(id) {
       $$('[data-h]', m).forEach(b => b.onclick = () => { close(); ({ cuts: suggestModal, spell: spellModal, ready: readyModal, cover: coverModal, illus: illusModal, bot: botPanel })[b.dataset.h](); });
     });
 
+
+  /* ----- 📄 ¿En qué página estoy? (páginas del libro impreso, tamaño A5) ----- */
+  const PW = 454, PH = 657;
+  const mz = document.createElement('div'); mz.className = 'mz'; document.body.append(mz); unsubs.push(() => mz.remove());
+  let pgT = null, starts = {}, totalPages = 1;
+  unsubs.push(() => clearTimeout(pgT));
+  const schedPages = (ms = 450) => { clearTimeout(pgT); pgT = setTimeout(calcPages, ms); };
+  function caretOffset() {
+    const s = getSelection(); if (!s.rangeCount || !ed.contains(s.anchorNode)) return null;
+    const r = document.createRange(); r.selectNodeContents(ed); r.setEnd(s.anchorNode, s.anchorOffset); return r.toString().length;
+  }
+  function calcPages() {
+    if (!ed.isConnected || !mz.isConnected) return;
+    const off = caretOffset();
+    mz.innerHTML = chapters.map(c => {
+      const live = c.id === active;
+      return `<section data-id="${c.id}"><h1 class="p-title">${esc(live ? (ti.value || 'Sin título') : (c.title || 'Sin título'))}</h1><div class="mzb">${live ? ed.innerHTML : sanitize(c.html || '')}</div></section>`;
+    }).join('');
+    hydrate(mz, imgs);
+    let mk = null;
+    if (off !== null) {
+      const body = mz.querySelector(`section[data-id="${active}"] .mzb`), w = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+      let n, cum = 0;
+      while ((n = w.nextNode())) { if (cum + n.data.length >= off) { const r = document.createRange(); r.setStart(n, off - cum); r.collapse(true); mk = document.createElement('span'); r.insertNode(mk); break; } cum += n.data.length; }
+    }
+    const base = mz.getBoundingClientRect().left, colOf = el => Math.max(0, Math.floor((el.getBoundingClientRect().left - base + 3) / PW));
+    starts = {}; mz.querySelectorAll('section').forEach(sec => { starts[sec.dataset.id] = colOf(sec) + 1; });
+    totalPages = Math.max(1, Math.ceil(mz.scrollWidth / PW - 0.02));
+    const here = mk ? colOf(mk) + 1 : (starts[active] || 1);
+    const idx = chapters.findIndex(c => c.id === active);
+    $('#pgInfo').innerHTML = `📄 Página <b>${Math.min(here, totalPages)}</b> de <b>${totalPages}</b>`;
+    $('#pgChap').textContent = `📖 Capítulo ${idx + 1} de ${chapters.length}`;
+    $$('.chap').forEach(el => { const p = el.querySelector('.pn'); if (p && starts[el.dataset.id]) p.textContent = 'p. ' + starts[el.dataset.id]; });
+    const st = $('#stats'); if (st) st.innerHTML = st.innerHTML.replace(/📄[^<]*$/, '') + `📄 ${totalPages} página${totalPages === 1 ? '' : 's'}`;
+  }
+  document.addEventListener('selectionchange', () => { if (ed.contains(getSelection().anchorNode)) schedPages(250); });
   /* barra de herramientas */
   $('#tb').addEventListener('mousedown', e => { if (!e.target.matches('select,input')) e.preventDefault(); });
   $$('[data-c]').forEach(b => b.onclick = () => { ed.focus(); document.execCommand(b.dataset.c); touch(); });
   $('#titBtn').onclick = () => { restoreSel(); const v = (document.queryCommandValue('formatBlock') || '').toLowerCase(); document.execCommand('formatBlock', false, v === 'h2' ? '<p>' : '<h2>'); touch(); };
   $('#qBtn').onclick = () => { restoreSel(); document.execCommand('formatBlock', false, '<blockquote>'); touch(); };
-  $('#moreBtn').onclick = () => { $('#more').classList.toggle('hidden'); $('#moreBtn').textContent = $('#more').classList.contains('hidden') ? '➕ Más' : '➖ Menos'; };
+  $('#moreBtn').onclick = () => { const h = $('#more').classList.toggle('hidden'); $('#moreBtn i').textContent = h ? '➕' : '✖️'; $('#moreBtn span').textContent = h ? 'Más' : 'Cerrar'; };
   $('#helpBtn').onclick = helpModal;
   const emptyCheck = () => ed.classList.toggle('is-empty', !ed.textContent.trim() && !ed.querySelector('img,.pagebreak'));
   ed.addEventListener('input', emptyCheck);

@@ -1,5 +1,5 @@
 // Service worker: la app abre sin conexión. Los datos los guarda Firestore en caché.
-const V = 'olivia-books-v6';
+const V = 'olivia-books-v7';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'util.js', 'export.js', 'firebase-config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon.svg'];
 
 self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
