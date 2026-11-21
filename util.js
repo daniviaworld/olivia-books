@@ -249,3 +249,210 @@ export function botReply(input) {
   for (const [id, re] of RULES) if (re.test(t)) return T[id]();
   return T.nada();
 }
+
+/* =====================================================================
+   📚 Biblioteca propia: libros PDF / ePub guardados SOLO en este dispositivo
+   ===================================================================== */
+const PDFJS_BASE = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/';
+let pdfjsP = null, jszipP = null;
+export function loadPdfJs() {
+  return (pdfjsP ??= (async () => {
+    const lib = await import(PDFJS_BASE + 'pdf.min.mjs');
+    const txt = await (await fetch(PDFJS_BASE + 'pdf.worker.min.mjs')).text();
+    lib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([txt], { type: 'text/javascript' }));
+    return lib;
+  })().catch(() => { pdfjsP = null; throw new Error('No se pudo cargar el lector de PDF (¿sin conexión?)'); }));
+}
+export function loadJSZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  return (jszipP ??= new Promise((ok, ko) => {
+    const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+    s.onload = () => ok(window.JSZip); s.onerror = () => { jszipP = null; ko(new Error('No se pudo cargar el lector de ePub (¿sin conexión?)')); };
+    document.head.append(s);
+  }));
+}
+
+/* ----- almacenamiento local (IndexedDB), una biblioteca por cuenta ----- */
+export function libDB(uid) {
+  return new Promise((ok, ko) => {
+    const r = indexedDB.open('ob-lib-' + uid, 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('meta', { keyPath: 'id' }); r.result.createObjectStore('files', { keyPath: 'id' }); };
+    r.onerror = () => ko(r.error);
+    r.onsuccess = () => {
+      const db = r.result, run = (stores, mode, fn) => new Promise((res, rej) => {
+        const tx = db.transaction(stores, mode); let out; tx.oncomplete = () => res(out); tx.onerror = tx.onabort = () => rej(tx.error);
+        out = fn(tx);
+      }), req = rq => new Promise((res, rej) => { rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+      ok({
+        all: () => run('meta', 'readonly', tx => req(tx.objectStore('meta').getAll())).then(r => r),
+        meta: id => run('meta', 'readonly', tx => req(tx.objectStore('meta').get(id))),
+        file: id => run('files', 'readonly', tx => req(tx.objectStore('files').get(id))).then(r => r?.blob),
+        add: (m, blob) => run(['meta', 'files'], 'readwrite', tx => { tx.objectStore('meta').put(m); tx.objectStore('files').put({ id: m.id, blob }); }),
+        update: m => run('meta', 'readwrite', tx => { tx.objectStore('meta').put(m); }),
+        remove: id => run(['meta', 'files'], 'readwrite', tx => { tx.objectStore('meta').delete(id); tx.objectStore('files').delete(id); })
+      });
+    };
+  });
+}
+
+/* ----- nombre de archivo → título, autor, colección y número ----- */
+export const normKey = s => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const tidy = s => (s || '').replace(/\s{2,}/g, ' ').replace(/^[\s\-–—_.,:;]+|[\s\-–—_.,:;]+$/g, '').trim();
+export function parseName(fn) {
+  let s = fn.replace(/\.(pdf|epub)$/i, '').replace(/_+/g, ' ');
+  s = s.replace(/\s*[(\[]\s*(?:z-?lib(?:\.org)?|www\.[^)\]]+|[^)\]]*(?:spanish|español|castellano|edition|edici[oó]n|epub|pdf|retail|ebook|libgen)[^)\]]*)\s*[)\]]/gi, '');
+  s = tidy(s); const out = { title: s, author: '', series: '', seriesNo: null }; let m;
+  const num = v => parseInt(v, 10);
+  if ((m = s.match(/^(.+?)\s*[(\[]\s*(.+?)\s*(?:#|n[ºo°]\.?\s*|vol\.?\s*|libro\s*|book\s*|tomo\s*)(\d{1,3})\s*[)\]]\s*(?:[-–—:]\s*(.+))?$/i))) {
+    out.series = tidy(m[2]); out.seriesNo = num(m[3]); out.title = tidy(m[1] + (m[4] ? ' - ' + m[4] : ''));
+  } else if ((m = s.match(/^(.+?)\s*[-–—]\s*0*(\d{1,3})\s*[-–—]\s*(.+)$/))) {
+    out.series = tidy(m[1]); out.seriesNo = num(m[2]); out.title = tidy(m[3]);
+  } else if ((m = s.match(/^(.+?)[\s,:-]+(?:libro|vol(?:umen)?\.?|tomo|book|n[ºo°]\.?|#)\s*0*(\d{1,3})(?:\s*[-–—:.]\s*(.+))?$/i))) {
+    out.series = tidy(m[1]); out.seriesNo = num(m[2]); out.title = tidy(m[3] || s);
+  } else if ((m = s.match(/^(.+?)\s+0*(\d{1,2})$/)) && m[1].split(/\s+/).length >= 2) {
+    out.series = tidy(m[1]); out.seriesNo = num(m[2]); out.title = s;
+  } else if ((m = s.match(/^([^-–—]{3,40}?)\s+[-–—]\s+(.+)$/)) && !/\d/.test(m[1]) && m[1].split(/\s+/).length <= 4) {
+    out.author = tidy(m[1]); out.title = tidy(m[2]);
+  }
+  if (out.series && out.series.length < 2) { out.series = ''; out.seriesNo = null; }
+  return out;
+}
+
+/* ----- miniatura de una imagen (Blob) para las portadas ----- */
+export async function thumbOf(blob, w = 320) {
+  try {
+    const bmp = await createImageBitmap(blob), k = Math.min(1, w / bmp.width);
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0, c.width, c.height); bmp.close?.();
+    return c.toDataURL('image/jpeg', 0.75);
+  } catch { return ''; }
+}
+
+/* ----- ePub ----- */
+const lname = e => e.localName || e.nodeName.replace(/^.*:/, '');
+const kids = (el, n) => [...el.getElementsByTagName('*')].filter(e => lname(e) === n);
+const resolvePath = (base, href) => { try { return decodeURIComponent(new URL(href.split('#')[0], 'http://x/' + base).pathname.slice(1)); } catch { return href; } };
+const parseX = (txt, type = 'application/xhtml+xml') => { const d = new DOMParser().parseFromString(txt, type); return d.getElementsByTagName('parsererror').length ? new DOMParser().parseFromString(txt, 'text/html') : d; };
+
+async function epubOpen(blob) {
+  const JSZip = await loadJSZip(), zip = await JSZip.loadAsync(blob);
+  const cont = zip.file('META-INF/container.xml'); if (!cont) throw new Error('No es un ePub válido');
+  const rootEl = kids(parseX(await cont.async('string'), 'text/xml'), 'rootfile')[0], opfPath = rootEl?.getAttribute('full-path'); if (!opfPath) throw new Error('ePub sin índice');
+  const opf = parseX(await zip.file(opfPath).async('string'), 'text/xml'), dir = opfPath.includes('/') ? opfPath.replace(/\/[^/]*$/, '/') : '';
+  const manifest = new Map();
+  kids(opf, 'item').forEach(i => manifest.set(i.getAttribute('id'), { id: i.getAttribute('id'), path: resolvePath(dir + 'x', i.getAttribute('href') || ''), type: i.getAttribute('media-type') || '', props: i.getAttribute('properties') || '' }));
+  const spine = kids(opf, 'itemref').map(r => manifest.get(r.getAttribute('idref'))).filter(Boolean);
+  return { zip, opf, dir, manifest, spine };
+}
+const firstText = (opf, n) => { const e = kids(opf, n)[0]; return e ? e.textContent.trim() : ''; };
+export async function epubInfo(blob) {
+  const { zip, opf, manifest, spine } = await epubOpen(blob);
+  const info = { title: firstText(opf, 'title'), author: kids(opf, 'creator').map(e => e.textContent.trim()).filter(Boolean).join(', '), series: '', seriesNo: null, cover: '' };
+  const metas = kids(opf, 'meta');
+  const cal = metas.find(m => m.getAttribute('name') === 'calibre:series'); if (cal) { info.series = (cal.getAttribute('content') || '').trim(); const ix = metas.find(m => m.getAttribute('name') === 'calibre:series_index'); const v = parseFloat(ix?.getAttribute('content')); if (!isNaN(v)) info.seriesNo = v; }
+  else { const col = metas.find(m => m.getAttribute('property') === 'belongs-to-collection'); if (col) { info.series = col.textContent.trim(); const id = col.getAttribute('id'); const gp = id && metas.find(m => m.getAttribute('refines') === '#' + id && m.getAttribute('property') === 'group-position'); const v = parseFloat(gp?.textContent); if (!isNaN(v)) info.seriesNo = v; } }
+  let cov = manifest.get(metas.find(m => m.getAttribute('name') === 'cover')?.getAttribute('content') || '') || [...manifest.values()].find(i => /cover-image/.test(i.props)) || [...manifest.values()].find(i => /^image\//.test(i.type) && /cover|portada/i.test(i.id + i.path));
+  if (!cov) { const first = spine[0] && zip.file(spine[0].path); if (first) { const txt = await first.async('string'); const m = txt.replace(/<(head|style|script)[\s\S]*?<\/\1>/gi, '').replace(/<[^>]+>/g, '').trim().length < 120 && txt.match(/(?:src|href)\s*=\s*["']([^"']+\.(?:jpe?g|png|gif|webp))["']/i); if (m) cov = { path: resolvePath(spine[0].path, m[1]) }; } }
+  const f = cov && zip.file(cov.path); if (f) info.cover = await thumbOf(await f.async('blob'));
+  return info;
+}
+
+const KEEP = new Set('p div span h1 h2 h3 h4 h5 h6 em strong b i u s sub sup br hr ul ol li dl dt dd blockquote pre code table thead tbody tfoot tr td th caption figure figcaption a img small big cite q abbr'.split(' '));
+const SKIP = new Set('script style link meta head title audio video iframe object embed form input button select textarea noscript'.split(' '));
+const escA = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+const escT = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function styleOf(el) {
+  const st = el.getAttribute('style') || '', out = []; let m;
+  if ((m = st.match(/text-align\s*:\s*(left|right|center|justify)/i))) out.push('text-align:' + m[1].toLowerCase());
+  if ((m = st.match(/text-indent\s*:\s*(-?[\d.]+)(em|px|%)/i)) && Math.abs(parseFloat(m[1])) < (m[2] === 'px' ? 80 : m[2] === '%' ? 20 : 4)) out.push(`text-indent:${m[1]}${m[2]}`);
+  if (/font-style\s*:\s*italic/i.test(st)) out.push('font-style:italic');
+  if (/font-weight\s*:\s*(bold|[6-9]00)/i.test(st)) out.push('font-weight:700');
+  const cls = el.getAttribute('class') || '';
+  if (!out.some(x => x.startsWith('text-align'))) { if (/(^|[\s_-])(center|centre|centered|centrado|centro)([\s_-]|$)/i.test(cls)) out.push('text-align:center'); else if (/(^|[\s_-])(right|derecha)([\s_-]|$)/i.test(cls)) out.push('text-align:right'); }
+  if (/(^|[\s_-])(italic|cursiva)([\s_-]|$)/i.test(cls) && !out.includes('font-style:italic')) out.push('font-style:italic');
+  return out.length ? ` style="${out.join(';')}"` : '';
+}
+
+/** Convierte un ePub en secciones limpias para el lector paginado. */
+export async function epubToBook(blob) {
+  const { zip, opf, manifest, spine } = await epubOpen(blob);
+  const info = await epubInfo(blob).catch(() => ({}));
+  const imgPaths = [], imgIdx = new Map(), anchorMap = new Map(), urls = [];
+  const idxOf = p => { if (!imgIdx.has(p)) { imgIdx.set(p, imgPaths.length); imgPaths.push(p); } return imgIdx.get(p); };
+  const spineIdx = new Map(spine.map((s, i) => [s.path, i]));
+  const tocRaw = [];
+  const nav = [...manifest.values()].find(i => /\bnav\b/.test(i.props)), ncx = [...manifest.values()].find(i => /dtbncx/.test(i.type) || /\.ncx$/.test(i.path));
+  try {
+    if (nav && zip.file(nav.path)) {
+      const nd = parseX(await zip.file(nav.path).async('string')), navEl = kids(nd, 'nav').find(n => /toc/.test((n.getAttribute('epub:type') || n.getAttribute('type') || '')) ) || kids(nd, 'nav')[0];
+      const walk = (el, depth) => { for (const c of el.children) { const n = lname(c); if (n === 'a') tocRaw.push({ title: c.textContent.replace(/\s+/g, ' ').trim(), href: c.getAttribute('href') || '', depth }); else walk(c, n === 'ol' || n === 'ul' ? depth + (el === navEl ? 0 : 1) : depth); } };
+      if (navEl) walk(navEl, 0);
+    } else if (ncx && zip.file(ncx.path)) {
+      const nd = parseX(await zip.file(ncx.path).async('string'), 'text/xml');
+      const walk = (el, depth) => { for (const c of el.children) if (lname(c) === 'navPoint') { const t = kids(c, 'text')[0], ct = kids(c, 'content')[0]; if (t && ct) tocRaw.push({ title: t.textContent.replace(/\s+/g, ' ').trim(), href: ct.getAttribute('src') || '', depth }); walk(c, depth + 1); } };
+      const nm = kids(nd, 'navMap')[0]; if (nm) walk(nm, 0);
+    }
+  } catch (e) { console.warn('índice del ePub', e); }
+  const tocBase = (nav || ncx)?.path || '';
+  const tocPaths = new Set(tocRaw.map(t => resolvePath(tocBase, t.href)));
+
+  const sections = [];
+  for (let i = 0; i < spine.length; i++) {
+    const it = spine[i]; if (/\bnav\b/.test(it.props) || !/html|xml/.test(it.type) || !zip.file(it.path)) continue;
+    const doc = parseX(await zip.file(it.path).async('string')), body = kids(doc, 'body')[0] || doc.documentElement;
+    const sid = 's' + i;
+    const hid = (p, f) => anchorMap.set(p + '#' + f, `e${i}_${f}`);
+    const conv = node => {
+      if (node.nodeType === 3) return escT(node.nodeValue);
+      if (node.nodeType !== 1) return '';
+      const n = lname(node).toLowerCase();
+      if (SKIP.has(n)) return '';
+      if (n === 'svg') { const im = kids(node, 'image')[0]; const h = im && (im.getAttribute('xlink:href') || im.getAttribute('href')); return h ? `<img data-ep="${idxOf(resolvePath(it.path, h))}" alt="">` : ''; }
+      const inner = () => [...node.childNodes].map(conv).join('');
+      if (n === 'img') { const s = node.getAttribute('src'); return s && !/^data:|^https?:/.test(s) ? `<img data-ep="${idxOf(resolvePath(it.path, s))}" alt="${escA(node.getAttribute('alt') || '')}">` : ''; }
+      const id = node.getAttribute('id'), idA = id ? ` id="e${i}_${escA(id)}"` : ''; if (id) hid(it.path, id);
+      if (n === 'a') {
+        const href = node.getAttribute('href') || '';
+        if (!href) return `<span${idA}>${inner()}</span>`;
+        if (/^https?:|^mailto:/i.test(href)) return `<a href="${escA(href)}" target="_blank" rel="noopener noreferrer">${inner()}</a>`;
+        const p = href.startsWith('#') ? it.path : resolvePath(it.path, href), f = href.includes('#') ? href.split('#')[1] : '';
+        return `<a href="#" data-go="${escA(p + '#' + f)}"${idA}>${inner()}</a>`;
+      }
+      if (n === 'center') return `<div style="text-align:center"${idA}>${inner()}</div>`;
+      if (!KEEP.has(n)) return (id ? `<span${idA}></span>` : '') + inner();
+      if ((n === 'p' || n === 'div' || n === 'span') && !node.textContent.trim() && !node.querySelector('img,svg,image')) return id ? `<span${idA}></span>` : '';
+      const extra = (n === 'td' || n === 'th') ? [...['colspan', 'rowspan']].map(a => node.getAttribute(a) ? ` ${a}="${escA(node.getAttribute(a))}"` : '').join('') : '';
+      if (n === 'br' || n === 'hr') return `<${n}${idA}>`;
+      return `<${n}${idA}${styleOf(node)}${extra}>${inner()}</${n}>`;
+    };
+    const html = conv(body).trim();
+    anchorMap.set(it.path + '#', sid);
+    const hasHead = /^\s*(?:<[^>]+>\s*)*<h[1-3][\s>]/i.test(html);
+    sections.push({ id: sid, path: it.path, html, nb: !(hasHead || tocPaths.has(it.path) || i === 0) });
+  }
+  // imágenes → blob URLs
+  const blobs = await Promise.all(imgPaths.map(async p => { const f = zip.file(p); if (!f) return ''; const type = manifest.size ? ([...manifest.values()].find(m => m.path === p)?.type || '') : ''; const b = await f.async('blob'); const u = URL.createObjectURL(type ? new Blob([b], { type }) : b); urls.push(u); return u; }));
+  sections.forEach(s => { s.html = s.html.replace(/data-ep="(\d+)"/g, (_, n) => blobs[+n] ? `src="${blobs[+n]}" class="ei"` : 'hidden'); });
+  // portada propia: si la primera sección es solo una imagen se quita (el lector ya muestra la portada)
+  let cover = '';
+  if (sections[0] && !sections[0].html.replace(/<[^>]*>/g, '').trim() && (sections[0].html.match(/<img/g) || []).length === 1) { cover = (sections[0].html.match(/src="([^"]+)"/) || [])[1] || ''; sections.shift(); }
+  if (!cover && info.cover) cover = info.cover;
+  // índice
+  const toc = tocRaw.map(t => { const p = resolvePath(tocBase, t.href), f = t.href.includes('#') ? t.href.split('#')[1] : ''; const target = anchorMap.get(p + '#' + f) || anchorMap.get(p + '#') || null; return target ? { title: t.title || 'Capítulo', depth: Math.min(t.depth, 2), target } : null; }).filter(Boolean);
+  return { title: info.title || firstText(opf, 'title'), author: info.author || '', lang: firstText(opf, 'language'), cover, sections: sections.filter(s => s.html), toc, anchorMap, urls };
+}
+
+/* ----- PDF: metadatos, número de páginas y miniatura de la portada ----- */
+const badPdfTitle = t => !t || t.length < 3 || /^(microsoft word|untitled|sin t[ií]tulo|document\d*)/i.test(t) || /\.(docx?|indd|pdf|tex|rtf|odt|qxd|pub)$/i.test(t);
+export async function pdfInfo(blob) {
+  const pdfjs = await loadPdfJs(), url = URL.createObjectURL(blob);
+  try {
+    const doc = await pdfjs.getDocument({ url }).promise;
+    const md = await doc.getMetadata().catch(() => null), inf = md?.info || {};
+    const page = await doc.getPage(1), v0 = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: 320 / v0.width });
+    const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+    await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    const out = { title: badPdfTitle((inf.Title || '').trim()) ? '' : inf.Title.trim(), author: /^(anonymous|an[oó]nimo|unknown|desconocid|admin|user|usuario|author|autor$|owner|pc$|windows|microsoft|calibre|adobe|root|default|none|null)/i.test((inf.Author || '').trim()) || (inf.Author || '').trim().length < 3 ? '' : (inf.Author || '').trim().slice(0, 80), pages: doc.numPages, cover: c.toDataURL('image/jpeg', 0.72) };
+    doc.destroy(); return out;
+  } finally { URL.revokeObjectURL(url); }
+}

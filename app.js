@@ -1,5 +1,5 @@
 import { firebaseConfig, WRITER_EMAIL } from './firebase-config.js';
-import { sanitize, dehydrate, hydrate, esc, compressImage, wordCount, COVERS, ILLUS, svgUrl, renderCover, renderIllus, botReply, BOT_CHIPS } from './util.js';
+import { sanitize, dehydrate, hydrate, esc, compressImage, wordCount, COVERS, ILLUS, svgUrl, renderCover, renderIllus, botReply, BOT_CHIPS, libDB, parseName, normKey, epubInfo, epubToBook, pdfInfo, loadPdfJs } from './util.js';
 import { openExport } from './export.js';
 
 const FB = 'https://www.gstatic.com/firebasejs/10.14.1/';
@@ -187,6 +187,8 @@ function route() {
   if (!state.approved) return renderPending();
   cleanup();
   const [, page, id] = location.hash.slice(1).split('/');
+  if (page === 'shelf') return renderShelf();
+  if (page === 'book' && id) return renderImported(id);
   if (page === 'read' && id) return renderReader(id);
   if (page === 'edit' && id && state.isWriter) return renderEditor(id);
   if (page === 'family' && state.isWriter) return renderFamily();
@@ -195,8 +197,9 @@ function route() {
 window.addEventListener('hashchange', route);
 
 /* ---------- Biblioteca ---------- */
+const tabs = on => `<nav class="seg"><a href="#/" class="${on === 'home' ? 'on' : ''}">${state.isWriter ? '✏️ Mis libros' : '📖 Libros de Olivia'}</a><a href="#/shelf" class="${on === 'shelf' ? 'on' : ''}">📚 Mi biblioteca</a></nav>`;
 function renderLibrary() {
-  app.innerHTML = topbar() + `<div class="container"><div class="row" style="justify-content:space-between"><h1 class="page-title">${state.isWriter ? 'Mis libros' : 'Biblioteca de Olivia'}</h1>
+  app.innerHTML = topbar() + `<div class="container">${tabs('home')}<div class="row" style="justify-content:space-between"><h1 class="page-title">${state.isWriter ? 'Mis libros' : 'Biblioteca de Olivia'}</h1>
     ${state.isWriter ? '<button class="btn primary" id="newBook">＋ Nuevo libro</button>' : ''}</div><div id="lib"><div class="spinner"></div></div></div>`;
   bindTopbar();
   const q = state.isWriter ? collection(db, 'books') : query(collection(db, 'books'), where('published', '==', true));
@@ -237,15 +240,17 @@ async function loadBook(id) {
 }
 
 /* ---------- Lector paginado ---------- */
-async function renderReader(id) {
+async function renderReader(id, imp = null) {
   app.innerHTML = topbar() + '<div class="spinner"></div>';
   bindTopbar();
   let data;
-  try { data = await loadBook(id); } catch (e) { app.innerHTML = topbar() + `<div class="empty">No se pudo abrir el libro.<br><a href="#/">Volver</a></div>`; bindTopbar(); return; }
+  try { data = imp ? await imp.load() : await loadBook(id); } catch (e) { console.error(e); app.innerHTML = topbar() + `<div class="empty">No se pudo abrir el libro.<br>${imp ? esc(e.message || '') + '<br>' : ''}<a href="#/${imp ? 'shelf' : ''}">Volver</a></div>`; bindTopbar(); return; }
   const { book, chapters, imgs } = data;
+  if (imp) unsubs.push(() => (data.urls || []).forEach(u => URL.revokeObjectURL(u)));
+  const savedPos = +store.get('ob-pos-' + id, 0);   // posición guardada: se lee antes de que ninguna maquetación la pise
   app.innerHTML = `<div class="reader">${topbar(`<span class="title-mini">${esc(book.title)}</span>`,
-    `<button class="btn icon" id="tocBtn" title="Índice">☰</button><button class="btn icon" id="shBtn" title="Compartir / exportar">⤴</button>${state.isWriter ? `<a class="btn" href="#/edit/${id}">✏️ Editar</a>` : ''}`)}
-    <div class="stage"><div class="paper"><div class="pager" id="pager"><div class="pages content" id="pages"></div></div>
+    `${imp ? '<a class="btn icon" href="#/shelf" title="Mi biblioteca">📚</a>' : ''}<button class="btn icon" id="tocBtn" title="Índice">☰</button>${imp ? '' : '<button class="btn icon" id="shBtn" title="Compartir / exportar">⤴</button>'}${!imp && state.isWriter ? `<a class="btn" href="#/edit/${id}">✏️ Editar</a>` : ''}`)}
+    <div class="stage"><div class="paper"><div class="pager" id="pager"><div class="pages content${imp ? ' ep' : ''}" id="pages"${imp && data.lang ? ` lang="${esc(data.lang)}"` : ''}></div></div>
     <button class="nav-zone l" id="prev" aria-label="Página anterior"></button><button class="nav-zone r" id="next" aria-label="Página siguiente"></button></div></div>
     <div class="bottombar"><button class="btn icon" id="p1">‹</button><input type="range" id="rng" min="1" max="1" value="1"><span class="pg" id="pg"></span><button class="btn icon" id="p2">›</button></div></div>`;
   const pager = $('#pager'), pages = $('#pages');
@@ -253,7 +258,7 @@ async function renderReader(id) {
   const startPages = [];
 
   pages.innerHTML = `<section class="titlepage">${book.coverData ? `<img class="cv" src="${book.coverData}" alt="Portada">` : ''}<h1>${esc(book.title)}</h1><div class="by">${esc(book.author || '')}</div></section>` +
-    chapters.map(c => `<section data-ch="${c.id}"><h2 class="chap-title">${esc(c.title)}</h2>${sanitize(c.html)}</section>`).join('');
+    chapters.map(c => c.raw ? `<section data-ch="${c.id}" id="${c.id}"${c.nb ? ' class="nb"' : ''}>${c.html}</section>` : `<section data-ch="${c.id}"><h2 class="chap-title">${esc(c.title)}</h2>${sanitize(c.html)}</section>`).join('');
   hydrate(pages, imgs);
 
   const imgsReady = Promise.all($$('img', pages).map(i => i.decode?.().catch(() => {}) ?? 0));
@@ -295,7 +300,8 @@ async function renderReader(id) {
   }
   function update() {
     if (!$('#pg')) return;
-    $('#pg').textContent = cur === 0 ? 'Portada' : `Página ${cur} de ${total - 1}`;
+    $('#pg').textContent = cur === 0 ? 'Portada' : `Página ${cur} de ${total - 1}${imp ? ' · ' + Math.round(cur / Math.max(1, total - 1) * 100) + ' %' : ''}`;
+    if (imp && total > 1) imp.save(cur / (total - 1));
     $('#rng').value = cur + 1;
     store.set('ob-pos-' + id, cur / Math.max(1, total - 1));
   }
@@ -312,15 +318,28 @@ async function renderReader(id) {
   };
   const ro = new ResizeObserver(() => layout()); ro.observe(pager); unsubs.push(() => ro.disconnect());
   bindTopbar(() => requestAnimationFrame(() => layout()));
-  $('#shBtn').onclick = () => openExport({ book, chapters, imgs, toast });
+  if (!imp) $('#shBtn').onclick = () => openExport({ book, chapters, imgs, toast });
   $('#tocBtn').onclick = () => modal(`<h2>Índice</h2>${chapters.map((c, i) => `<button class="opt" data-i="${i}"><span style="flex:1">${esc(c.title)}</span><span class="muted">pág. ${Math.max(1, startPages[i + 1] ?? 1)}</span></button>`).join('') || '<p class="muted">Sin capítulos.</p>'}`,
     (m, close) => $$('[data-i]', m).forEach(b => b.onclick = () => { close(); goto(startPages[+b.dataset.i + 1] ?? 0); }));
+
+  if (imp) {
+    const aMap = data.anchorMap, byId = t => document.getElementById(t);
+    const pageOf = el => { const r = el.getClientRects()[0] || el.getBoundingClientRect(); return Math.max(0, Math.floor((r.left - pages.getBoundingClientRect().left + 3) / W)); };
+    let back = null; const bb = document.createElement('button'); bb.className = 'backchip hidden'; bb.textContent = '↩ Volver'; $('.stage').append(bb);
+    bb.onclick = () => { if (back != null) goto(back); back = null; bb.classList.add('hidden'); };
+    const jump = t => { const el = t && byId(t); if (!el) return; back = cur; bb.classList.remove('hidden'); goto(pageOf(el)); };
+    pages.addEventListener('click', e => { const a = e.target.closest('a[data-go]'); if (!a) return; e.preventDefault(); const k = a.dataset.go; jump(aMap.get(k) || aMap.get(k.split('#')[0] + '#')); });
+    $('#tocBtn').onclick = () => {
+      const items = data.toc.length ? data.toc : chapters.map((c, i) => ({ title: 'Parte ' + (i + 1), depth: 0, target: c.id }));
+      modal(`<h2>Índice</h2>${items.map((t, i) => { const el = byId(t.target); return `<button class="opt" data-i="${i}" style="padding-left:${12 + t.depth * 16}px"><span style="flex:1">${esc(t.title)}</span><span class="muted">${el ? 'pág. ' + Math.max(1, pageOf(el)) : ''}</span></button>`; }).join('') || '<p class="muted">Este libro no tiene índice.</p>'}`,
+        (m, close) => $$('[data-i]', m).forEach(b => b.onclick = () => { close(); const el = byId(items[+b.dataset.i].target); if (el) goto(pageOf(el)); }));
+    };
+  }
 
   await imgsReady;
   await document.fonts?.ready;
   layout(false);
-  const saved = +store.get('ob-pos-' + id, 0);
-  goto(Math.round(saved * (total - 1)), false);
+  goto(Math.round(savedPos * (total - 1)), false);
   const t2 = setTimeout(() => layout(true), 250); unsubs.push(() => clearTimeout(t2));
 }
 
@@ -947,6 +966,200 @@ async function renderEditor(id) {
 }
 
 /* ---------- Familia (solo escritora) ---------- */
+/* =====================================================================
+   📚 Mi biblioteca: libros PDF / ePub guardados solo en este dispositivo
+   ===================================================================== */
+let _lib = null, _libUid = null;
+const getLib = async () => { if (!_lib || _libUid !== state.user.uid) { _libUid = state.user.uid; _lib = libDB(state.user.uid); } return _lib; };
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : 'b' + Date.now() + Math.random().toString(36).slice(2));
+
+async function importFiles(files, after) {
+  const lib = await getLib();
+  const list = [...files].filter(f => /\.(pdf|epub)$/i.test(f.name));
+  if (!list.length) { toast('Solo puedo añadir libros PDF o ePub'); return; }
+  navigator.storage?.persist?.().catch(() => {});
+  const sigs = new Set((await lib.all()).map(b => b.sig));
+  let ok = 0, dup = 0; const fail = [];
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i], sig = f.name + '|' + f.size;
+    if (sigs.has(sig)) { dup++; continue; }
+    toast(`📥 Añadiendo ${i + 1} de ${list.length}…`);
+    try {
+      const nm = parseName(f.name), isEpub = /\.epub$/i.test(f.name);
+      const meta = { id: newId(), sig, name: f.name, format: isEpub ? 'epub' : 'pdf', size: f.size, addedAt: Date.now(), lastRead: 0, pos: 0, page: 1, title: nm.title, author: nm.author, series: nm.series, seriesNo: nm.seriesNo, cover: '' };
+      if (isEpub) {
+        const inf = await epubInfo(f);
+        if (inf.title) meta.title = inf.title; if (inf.author) meta.author = inf.author;
+        if (inf.series) { meta.series = inf.series; meta.seriesNo = inf.seriesNo ?? nm.seriesNo; }
+        meta.cover = inf.cover || '';
+      } else {
+        const inf = await pdfInfo(f);
+        if (inf.title && !nm.series) meta.title = inf.title; if (inf.author && !meta.author) meta.author = inf.author;
+        meta.pages = inf.pages; meta.cover = inf.cover || '';
+      }
+      await lib.add(meta, f); sigs.add(sig); ok++;
+    } catch (e) { console.error(e); fail.push(f.name); }
+  }
+  toast(ok ? `✅ ${ok} libro${ok > 1 ? 's' : ''} añadido${ok > 1 ? 's' : ''}${dup ? ` (${dup} ya estaba${dup > 1 ? 'n' : ''})` : ''}${fail.length ? ` · ${fail.length} no se pudo` : ''}` : dup ? 'Ese libro ya estaba en tu biblioteca' : `No pude añadir: ${fail[0] || 'el archivo'}`);
+  after?.();
+}
+
+async function renderShelf() {
+  let lib; try { lib = await getLib(); } catch (e) { console.error('biblioteca', e); app.innerHTML = topbar() + '<div class="empty">Este navegador no permite guardar libros.</div>'; bindTopbar(); return; }
+  app.innerHTML = topbar() + `<div class="container shelfp">${tabs('shelf')}
+    <div class="row" style="justify-content:space-between"><h1 class="page-title">📚 Mi biblioteca</h1><label class="btn primary" for="addBooks">📥 Añadir libros</label></div>
+    <input type="file" id="addBooks" multiple accept=".pdf,.epub,application/pdf,application/epub+zip" class="hidden">
+    <div class="shelf-tools"><input type="search" id="sq" placeholder="🔎 Buscar título, autor o colección" autocomplete="off"><select id="ss" aria-label="Ordenar"><option value="col">Por colecciones</option><option value="title">Por título</option><option value="author">Por autor</option><option value="recent">Recientes</option></select></div>
+    <div id="shelf"><div class="spinner"></div></div><p class="muted" id="shnote" style="font-size:.85rem;text-align:center"></p></div>`;
+  bindTopbar();
+  const ss = $('#ss'); ss.value = store.get('ob-shelf-sort', 'col') || 'col';
+  let books = [];
+  const sortBooks = (a, k) => a.sort((x, y) => k === 'author' ? (x.author || '~').localeCompare(y.author || '~', 'es') || x.title.localeCompare(y.title, 'es') : k === 'recent' ? (y.addedAt - x.addedAt) : x.title.localeCompare(y.title, 'es', { numeric: true }));
+  const card = b => `<div class="bk" data-id="${b.id}"><div class="bcover" ${b.cover ? `style="background-image:url('${b.cover}')"` : ''}>${b.cover ? '' : `<span>${esc(b.title)}</span>`}<span class="bfmt">${b.format === 'epub' ? 'ePub' : 'PDF'}</span>${b.series && b.seriesNo != null ? `<span class="bno">#${esc(String(b.seriesNo))}</span>` : ''}${b.pos > 0.01 ? `<div class="bprog"><i style="width:${Math.min(100, Math.round(b.pos * 100))}%"></i></div>` : ''}</div>
+      <div class="bmeta"><b>${esc(b.title)}</b><small>${esc(b.author || '')}</small></div><button class="bmore" data-more="${b.id}" aria-label="Opciones">⋯</button></div>`;
+  async function load() {
+    books = await lib.all();
+    draw();
+    try { const e = await navigator.storage?.estimate?.(); $('#shnote').textContent = books.length ? `${books.length} libro${books.length > 1 ? 's' : ''} · guardados solo en este dispositivo${e?.usage ? ' · ' + (e.usage / 1048576 >= 1024 ? (e.usage / 1073741824).toFixed(1) + ' GB' : Math.round(e.usage / 1048576) + ' MB') + ' ocupados' : ''}` : ''; } catch {}
+  }
+  function draw() {
+    const q = normKey($('#sq').value), mode = ss.value;
+    const vis = books.filter(b => !q || normKey([b.title, b.author, b.series].join(' ')).includes(q));
+    let html = '';
+    if (!books.length) html = `<div class="empty"><div style="font-size:54px">📚</div><p><b>Tu biblioteca está vacía</b></p><p>Pulsa <b>📥 Añadir libros</b> y elige tus PDF o ePub de la carpeta Descargas.<br>También puedes arrastrarlos aquí.</p></div>`;
+    else if (!vis.length) html = '<div class="empty">No encuentro ningún libro con eso.</div>';
+    else if (mode === 'col' && !q) {
+      const reading = vis.filter(b => b.pos > 0.01 && b.pos < 0.97 && b.lastRead).sort((a, b) => b.lastRead - a.lastRead).slice(0, 8);
+      if (reading.length) html += `<h2 class="shh">▶️ Seguir leyendo</h2><div class="hrow">${reading.map(card).join('')}</div>`;
+      const groups = new Map(), loose = [];
+      vis.forEach(b => { const k = normKey(b.series); if (k) { if (!groups.has(k)) groups.set(k, { name: b.series, items: [] }); groups.get(k).items.push(b); } else loose.push(b); });
+      const single = [...groups.entries()].filter(([, g]) => g.items.length < 2); single.forEach(([k, g]) => { groups.delete(k); loose.push(...g.items); });
+      [...groups.values()].sort((a, b) => a.name.localeCompare(b.name, 'es')).forEach(g => {
+        g.items.sort((x, y) => (x.seriesNo ?? 9999) - (y.seriesNo ?? 9999) || x.title.localeCompare(y.title, 'es', { numeric: true }));
+        html += `<h2 class="shh">📚 ${esc(g.name)} <small>${g.items.length} libros</small></h2><div class="grid shgrid">${g.items.map(card).join('')}</div>`;
+      });
+      if (loose.length) html += `<h2 class="shh">📖 ${groups.size ? 'Libros sueltos' : 'Todos los libros'}</h2><div class="grid shgrid">${sortBooks(loose, 'title').map(card).join('')}</div>`;
+    } else html = `<div class="grid shgrid">${sortBooks([...vis], mode === 'col' ? 'title' : mode).map(card).join('')}</div>`;
+    $('#shelf').innerHTML = html;
+  }
+  $('#shelf').addEventListener('click', e => {
+    const mo = e.target.closest('[data-more]'); if (mo) { e.stopPropagation(); return editBook(lib, books.find(b => b.id === mo.dataset.more), load); }
+    const bk = e.target.closest('.bk'); if (bk) location.hash = '#/book/' + bk.dataset.id;
+  });
+  $('#sq').addEventListener('input', draw);
+  ss.onchange = () => { store.set('ob-shelf-sort', ss.value); draw(); };
+  const add = fl => importFiles(fl, load);
+  $('#addBooks').onchange = async e => { const fl = [...e.target.files]; e.target.value = ''; if (fl.length) await add(fl); };
+  const dov = e => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); }, dro = e => { if (e.dataTransfer?.files?.length) { e.preventDefault(); add(e.dataTransfer.files); } };
+  window.addEventListener('dragover', dov); window.addEventListener('drop', dro); unsubs.push(() => { window.removeEventListener('dragover', dov); window.removeEventListener('drop', dro); });
+  await load();
+  // libros enviados desde otra app con «Compartir → Olivia Books»
+  try {
+    if (window.caches) {
+      const sc = await caches.open('ob-share'), reqs = await sc.keys();
+      if (reqs.length) {
+        const files = await Promise.all(reqs.map(async r => { const res = await sc.match(r); const blob = await res.blob(); return new File([blob], new URL(r.url).searchParams.get('name') || 'libro.pdf', { type: blob.type }); }));
+        await add(files); await Promise.all(reqs.map(r => sc.delete(r)));
+      }
+    }
+  } catch (e) { console.warn('share', e); }
+}
+
+function editBook(lib, b, done) {
+  if (!b) return;
+  modal(`<h2>✏️ Datos del libro</h2>
+    <label>Título</label><input type="text" id="ebT" value="${esc(b.title)}">
+    <label>Autor</label><input type="text" id="ebA" value="${esc(b.author || '')}">
+    <div class="row" style="align-items:flex-end;flex-wrap:nowrap"><div style="flex:1"><label>Colección (saga)</label><input type="text" id="ebS" value="${esc(b.series || '')}" placeholder="Ej.: Harry Potter"></div><div style="width:84px"><label>Nº</label><input type="text" id="ebN" inputmode="decimal" value="${b.seriesNo ?? ''}" placeholder="1"></div></div>
+    <p class="muted" style="font-size:.85rem;margin:8px 0 0">Los libros de la misma colección se agrupan y se ordenan por número.</p>
+    <div class="row" style="margin-top:14px;justify-content:space-between"><button class="btn danger" id="ebD">🗑 Quitar de aquí</button><span><button class="btn" id="ebC">Cancelar</button> <button class="btn primary" id="ebOk">Guardar</button></span></div>`,
+    (m, close) => {
+      $('#ebC', m).onclick = close;
+      $('#ebOk', m).onclick = async () => { b.title = $('#ebT', m).value.trim() || b.title; b.author = $('#ebA', m).value.trim(); b.series = $('#ebS', m).value.trim(); const n = parseFloat($('#ebN', m).value.replace(',', '.')); b.seriesNo = b.series && !isNaN(n) ? n : null; await lib.update(b); close(); done(); };
+      let sure = false; $('#ebD', m).onclick = async e => { if (!sure) { sure = true; e.target.textContent = '¿Seguro? Pulsa otra vez'; return; } await lib.remove(b.id); close(); toast('Libro quitado de este dispositivo'); done(); };
+    });
+}
+
+async function renderImported(id) {
+  const lib = await getLib(), meta = await lib.meta(id);
+  if (!meta) { location.hash = '#/shelf'; return; }
+  let saveT = null;
+  const save = frac => { meta.pos = frac; meta.lastRead = Date.now(); clearTimeout(saveT); saveT = setTimeout(() => lib.update(meta).catch(() => {}), 700); };
+  unsubs.push(() => { clearTimeout(saveT); lib.update(meta).catch(() => {}); });
+  if (meta.format === 'epub') {
+    return renderReader(id, {
+      save,
+      load: async () => {
+        const blob = await lib.file(id); if (!blob) throw new Error('El archivo ya no está en este dispositivo');
+        const bk = await epubToBook(blob);
+        if (!bk.sections.length) throw new Error('Este ePub no tiene texto que mostrar');
+        return { book: { title: meta.title || bk.title, author: meta.author || bk.author, coverData: bk.cover }, chapters: bk.sections.map(s => ({ id: s.id, title: '', html: s.html, raw: true, nb: s.nb })), imgs: new Map(), toc: bk.toc, anchorMap: bk.anchorMap, urls: bk.urls, lang: bk.lang };
+      }
+    });
+  }
+  return renderPdfReader(meta, lib, save);
+}
+
+async function renderPdfReader(meta, lib, save) {
+  app.innerHTML = topbar() + '<div class="spinner"></div>'; bindTopbar();
+  let pdf, url;
+  try {
+    const [pdfjs, blob] = await Promise.all([loadPdfJs(), lib.file(meta.id)]);
+    if (!blob) throw new Error('El archivo ya no está en este dispositivo');
+    url = URL.createObjectURL(blob); pdf = await pdfjs.getDocument({ url }).promise;
+  } catch (e) { console.error(e); app.innerHTML = topbar() + `<div class="empty">No se pudo abrir el libro.<br>${esc(e.message || '')}<br><a href="#/shelf">Volver</a></div>`; bindTopbar(); return; }
+  unsubs.push(() => { try { pdf.destroy(); } catch {} URL.revokeObjectURL(url); });
+  const N = pdf.numPages; meta.pages = N;
+  app.innerHTML = `<div class="reader pdfr">${topbar(`<span class="title-mini">${esc(meta.title)}</span>`,
+    `<a class="btn icon" href="#/shelf" title="Mi biblioteca">📚</a><button class="btn icon" id="tocBtn" title="Índice">☰</button><button class="btn icon" id="zo" title="Más pequeño">−</button><button class="btn icon" id="zi" title="Más grande">＋</button>`)}
+    <div class="stage"><div class="pdfwrap" id="pdfw"><canvas id="cv" class="pdfcv"></canvas></div>
+    <button class="nav-zone l" id="prev" aria-label="Página anterior"></button><button class="nav-zone r" id="next" aria-label="Página siguiente"></button></div>
+    <div class="bottombar"><button class="btn icon" id="p1">‹</button><input type="range" id="rng" min="1" max="${N}" value="1"><span class="pg" id="pg"></span><button class="btn icon" id="p2">›</button></div></div>`;
+  bindTopbar(() => requestAnimationFrame(() => show(cur)));
+  const box = $('#pdfw'), cv = $('#cv'), ctx = cv.getContext('2d');
+  let cur = Math.max(1, Math.min(N, +meta.page || 1)), zoom = +store.get('ob-pdf-zoom', 1) || 1, tk = 0, task = null;
+  async function show(n) {
+    if (!cv.isConnected) return;
+    cur = Math.max(1, Math.min(N, n)); const my = ++tk;
+    $('#pg').textContent = `Página ${cur} de ${N} · ${Math.round(cur / N * 100)} %`; $('#rng').value = cur;
+    meta.page = cur; save(cur / N);
+    try {
+      const page = await pdf.getPage(cur); if (my !== tk) return;
+      const v0 = page.getViewport({ scale: 1 }), k = (box.clientWidth - 2) / v0.width * zoom, vp = page.getViewport({ scale: k });
+      const q = Math.min(window.devicePixelRatio || 1, 3, Math.sqrt(16e6 / (vp.width * vp.height)) || 1);
+      cv.width = Math.floor(vp.width * q); cv.height = Math.floor(vp.height * q); cv.style.width = Math.floor(vp.width) + 'px'; cv.style.height = Math.floor(vp.height) + 'px';
+      task?.cancel(); task = page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: k * q }) });
+      await task.promise; box.scrollTop = 0;
+    } catch (e) { if (e?.name !== 'RenderingCancelledException') console.error(e); }
+    box.classList.toggle('zoomed', zoom > 1.05);
+  }
+  const go = n => { if (n >= 1 && n <= N && n !== cur) show(n); };
+  $('#next').onclick = $('#p2').onclick = () => go(cur + 1);
+  $('#prev').onclick = $('#p1').onclick = () => go(cur - 1);
+  $('#rng').oninput = e => go(+e.target.value);
+  const setZoom = z => { zoom = Math.max(0.5, Math.min(4, z)); store.set('ob-pdf-zoom', String(zoom)); show(cur); };
+  $('#zi').onclick = () => setZoom(zoom + 0.25); $('#zo').onclick = () => setZoom(zoom - 0.25);
+  document.onkeydown = e => {
+    if (e.target.matches('input,textarea')) return;
+    if (['ArrowRight', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); go(cur + 1); }
+    if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); go(cur - 1); }
+  };
+  let tx = 0, ty = 0;
+  box.addEventListener('touchstart', e => { tx = e.touches[0].clientX; ty = e.touches[0].clientY; }, { passive: true });
+  box.addEventListener('touchend', e => { if (zoom > 1.05) return; const dx = e.changedTouches[0].clientX - tx, dy = e.changedTouches[0].clientY - ty; if (Math.abs(dx) > 60 && Math.abs(dy) < 45) go(cur + (dx < 0 ? 1 : -1)); }, { passive: true });
+  let rz; const ro = new ResizeObserver(() => { clearTimeout(rz); rz = setTimeout(() => show(cur), 220); }); ro.observe(box); unsubs.push(() => { clearTimeout(rz); ro.disconnect(); });
+  async function destPage(dest) { try { const d = typeof dest === 'string' ? await pdf.getDestination(dest) : dest; if (!d) return null; return typeof d[0] === 'object' ? (await pdf.getPageIndex(d[0])) + 1 : (+d[0] + 1); } catch { return null; } }
+  $('#tocBtn').onclick = async () => {
+    const out = await pdf.getOutline().catch(() => null), flat = [];
+    const walk = (a, d) => (a || []).forEach(o => { if (flat.length < 400) { flat.push({ t: o.title, dest: o.dest, d }); walk(o.items, Math.min(d + 1, 2)); } }); walk(out, 0);
+    for (const f of flat) f.page = await destPage(f.dest);
+    modal(`<h2>Índice</h2><div class="row" style="margin:6px 0"><label style="margin:0">Ir a la página</label><input type="number" id="gp" min="1" max="${N}" value="${cur}" style="width:90px"><button class="btn primary" id="gpOk">Ir</button></div>
+      ${flat.filter(f => f.page).map((f, i) => `<button class="opt" data-p="${f.page}" style="padding-left:${12 + f.d * 16}px"><span style="flex:1">${esc(f.t)}</span><span class="muted">pág. ${f.page}</span></button>`).join('') || '<p class="muted">Este PDF no tiene índice.</p>'}`,
+      (m, close) => { $$('[data-p]', m).forEach(b => b.onclick = () => { close(); go(+b.dataset.p); }); $('#gpOk', m).onclick = () => { close(); go(+$('#gp', m).value); }; });
+  };
+  show(cur);
+}
+
 function renderFamily() {
   app.innerHTML = topbar() + `<div class="container"><a href="#/">← Mis libros</a><h1 class="page-title">Familia y accesos</h1>
   <p class="muted">Quien se registre aparece aquí. Solo podrá leer tus libros publicados cuando lo apruebes.</p><div class="card users" id="us"><div class="spinner"></div></div></div>`;
