@@ -200,6 +200,24 @@ window.addEventListener('hashchange', route);
 
 /* ---------- Biblioteca ---------- */
 let backHash = '#/shelf';
+// Libros importados: pantalla completa (sin barras). Toca el centro de la página para ver/ocultar los botones.
+const wantFs = () => { if (store.get('ob-imm', '1') !== '0') try { document.documentElement.requestFullscreen?.()?.catch?.(() => {}); } catch {} };
+function immersive(reader) {
+  if (!reader) return;
+  let on = store.get('ob-imm', '1') !== '0';
+  const apply = () => reader.classList.toggle('immersive', on);
+  apply();
+  const fs = async want => { try { if (want && !document.fullscreenElement) await document.documentElement.requestFullscreen?.(); else if (!want && document.fullscreenElement) await document.exitFullscreen(); } catch {} };
+  const btn = $('#fsBtn', reader); if (btn) btn.onclick = async () => { on = !on; store.set('ob-imm', on ? '1' : '0'); apply(); await fs(on); };
+  const st = $('.stage', reader);
+  st?.addEventListener('click', e => {
+    if (e.target.closest('a,button,input')) return;
+    const r = st.getBoundingClientRect(), x = (e.clientX - r.left) / r.width;
+    if (x > .22 && x < .78 && !String(getSelection?.() || '')) { on = !on; apply(); }
+  });
+  if (on && !store.get('ob-imm-hint', '')) { store.set('ob-imm-hint', '1'); toast('👆 Toca el centro de la página para ver los botones', 4500); }
+  unsubs.push(() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); });
+}
 const subtabs = on => `<nav class="subseg"><a href="#/shelf" class="${on === 'me' ? 'on' : ''}">📱 Personal</a><a href="#/fshelf" class="fam ${on === 'fam' ? 'on' : ''}">👨‍👩‍👧 Familia</a></nav>`;
 const tabs = on => `<nav class="seg"><a href="#/" class="${on === 'home' ? 'on' : ''}">${state.isWriter ? '✏️ Mis libros' : '📖 Libros de Olivia'}</a><a href="#/shelf" class="${on === 'shelf' ? 'on' : ''}">📚 Mi biblioteca</a></nav>`;
 function renderLibrary() {
@@ -253,7 +271,7 @@ async function renderReader(id, imp = null) {
   if (imp) unsubs.push(() => (data.urls || []).forEach(u => URL.revokeObjectURL(u)));
   const savedPos = +store.get('ob-pos-' + id, 0);   // posición guardada: se lee antes de que ninguna maquetación la pise
   app.innerHTML = `<div class="reader">${topbar(`<span class="title-mini">${esc(book.title)}</span>`,
-    `${imp ? `<a class="btn icon" href="${backHash}" title="Mi biblioteca">📚</a>` : ''}<button class="btn icon" id="tocBtn" title="Índice">☰</button>${imp ? '' : '<button class="btn icon" id="shBtn" title="Compartir / exportar">⤴</button>'}${!imp && state.isWriter ? `<a class="btn" href="#/edit/${id}">✏️ Editar</a>` : ''}`)}
+    `${imp ? `<button class="btn icon" id="fsBtn" title="Pantalla completa">⛶</button><a class="btn icon" href="${backHash}" title="Mi biblioteca">📚</a>` : ''}<button class="btn icon" id="tocBtn" title="Índice">☰</button>${imp ? '' : '<button class="btn icon" id="shBtn" title="Compartir / exportar">⤴</button>'}${!imp && state.isWriter ? `<a class="btn" href="#/edit/${id}">✏️ Editar</a>` : ''}`)}
     <div class="stage"><div class="paper"><div class="pager" id="pager"><div class="pages content${imp ? ' ep' : ''}" id="pages"${imp && data.lang ? ` lang="${esc(data.lang)}"` : ''}></div></div>
     <button class="nav-zone l" id="prev" aria-label="Página anterior"></button><button class="nav-zone r" id="next" aria-label="Página siguiente"></button></div></div>
     <div class="bottombar"><button class="btn icon" id="p1">‹</button><input type="range" id="rng" min="1" max="1" value="1"><span class="pg" id="pg"></span><button class="btn icon" id="p2">›</button></div></div>`;
@@ -322,6 +340,7 @@ async function renderReader(id, imp = null) {
   };
   const ro = new ResizeObserver(() => layout()); ro.observe(pager); unsubs.push(() => ro.disconnect());
   bindTopbar(() => requestAnimationFrame(() => layout()));
+  if (imp) immersive($('.reader'));
   if (!imp) $('#shBtn').onclick = () => openExport({ book, chapters, imgs, toast });
   $('#tocBtn').onclick = () => modal(`<h2>Índice</h2>${chapters.map((c, i) => `<button class="opt" data-i="${i}"><span style="flex:1">${esc(c.title)}</span><span class="muted">pág. ${Math.max(1, startPages[i + 1] ?? 1)}</span></button>`).join('') || '<p class="muted">Sin capítulos.</p>'}`,
     (m, close) => $$('[data-i]', m).forEach(b => b.onclick = () => { close(); goto(startPages[+b.dataset.i + 1] ?? 0); }));
@@ -1048,7 +1067,7 @@ async function renderShelf() {
   }
   $('#shelf').addEventListener('click', e => {
     const mo = e.target.closest('[data-more]'); if (mo) { e.stopPropagation(); return editBook(lib, books.find(b => b.id === mo.dataset.more), load); }
-    const bk = e.target.closest('.bk'); if (bk) location.hash = '#/book/' + bk.dataset.id;
+    const bk = e.target.closest('.bk'); if (bk) { wantFs(); location.hash = '#/book/' + bk.dataset.id; }
   });
   $('#sq').addEventListener('input', draw);
   ss.onchange = () => { store.set('ob-shelf-sort', ss.value); draw(); };
@@ -1126,7 +1145,7 @@ async function renderFamShelf() {
   }
   $('#shelf').addEventListener('click', e => {
     const mo = e.target.closest('[data-more]'); if (mo) { e.stopPropagation(); return famMenu(lib, items.find(b => b.id === mo.dataset.more), cached.has(mo.dataset.more), mine, () => refresh()); }
-    const bk = e.target.closest('.bk'); if (bk) location.hash = '#/fbook/' + bk.dataset.id;
+    const bk = e.target.closest('.bk'); if (bk) { wantFs(); location.hash = '#/fbook/' + bk.dataset.id; }
   });
   $('#sq').addEventListener('input', draw);
   async function refresh() { try { cached = new Map((await lib.all()).map(m => [m.id, m])); } catch {} draw(); }
@@ -1160,7 +1179,7 @@ async function renderFamBook(id) {
     } catch (e) {
       console.error(e);
       if (location.hash !== '#/fbook/' + id) return;
-      app.innerHTML = topbar() + `<div class="empty"><div style="font-size:44px">📡</div><p>No se pudo descargar el libro.<br><small>${esc(shareErr(e))}</small></p><a class="btn" href="#/fshelf">Volver</a></div>`; bindTopbar(); return;
+      app.innerHTML = topbar() + `<div class="empty"><div style="font-size:44px">📡</div><p>No se pudo descargar el libro.<br><small>${esc(shareErr(e))}</small><br><small class="muted">${esc(e?.code || e?.name || '')}</small></p><a class="btn" href="#/fshelf">Volver</a></div>`; bindTopbar(); return;
     }
   }
   if (location.hash !== '#/fbook/' + id) return;
@@ -1218,11 +1237,12 @@ async function renderPdfReader(meta, lib, save) {
   unsubs.push(() => { try { pdf.destroy(); } catch {} URL.revokeObjectURL(url); });
   const N = pdf.numPages; meta.pages = N;
   app.innerHTML = `<div class="reader pdfr">${topbar(`<span class="title-mini">${esc(meta.title)}</span>`,
-    `<a class="btn icon" href="${backHash}" title="Mi biblioteca">📚</a><button class="btn icon" id="tocBtn" title="Índice">☰</button><button class="btn icon" id="zo" title="Más pequeño">−</button><button class="btn icon" id="zi" title="Más grande">＋</button>`)}
+    `<button class="btn icon" id="fsBtn" title="Pantalla completa">⛶</button><a class="btn icon" href="${backHash}" title="Mi biblioteca">📚</a><button class="btn icon" id="tocBtn" title="Índice">☰</button><button class="btn icon" id="zo" title="Más pequeño">−</button><button class="btn icon" id="zi" title="Más grande">＋</button>`)}
     <div class="stage"><div class="pdfwrap" id="pdfw"><canvas id="cv" class="pdfcv"></canvas></div>
     <button class="nav-zone l" id="prev" aria-label="Página anterior"></button><button class="nav-zone r" id="next" aria-label="Página siguiente"></button></div>
     <div class="bottombar"><button class="btn icon" id="p1">‹</button><input type="range" id="rng" min="1" max="${N}" value="1"><span class="pg" id="pg"></span><button class="btn icon" id="p2">›</button></div></div>`;
   bindTopbar(() => requestAnimationFrame(() => show(cur)));
+  immersive($('.reader'));
   const box = $('#pdfw'), cv = $('#cv'), ctx = cv.getContext('2d');
   let cur = Math.max(1, Math.min(N, +meta.page || 1)), zoom = +store.get('ob-pdf-zoom', 1) || 1, tk = 0, task = null;
   async function show(n) {

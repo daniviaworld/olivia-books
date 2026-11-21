@@ -423,3 +423,10 @@ input[type=search]{width:100%;border:1px solid var(--line);background:var(--surf
 .sharebox{display:flex;flex-direction:column;gap:6px;align-items:flex-start;margin:14px 0 0;padding:12px;border-radius:14px;background:linear-gradient(135deg,#d8f6ec55,#e2eeff55);border:2px dashed #17a58966}
 .sharebox small{color:var(--muted,#666)}
 .subseg{flex-wrap:nowrap}.subseg a{flex:1;text-align:center;font-size:.9rem;padding:9px 8px}.famp .bmeta{padding-right:30px}
+
+/* ---- Pantalla completa en libros importados ---- */
+.reader.immersive .topbar{display:none}
+.reader.immersive .bottombar{height:26px;margin:0 10px 2px;padding:0;background:none;box-shadow:none;border:0;justify-content:center}
+.reader.immersive .bottombar>:not(.pg){display:none}
+.reader.immersive .bottombar .pg{font-size:.78rem;opacity:.7;text-align:center}
+.reader.immersive .stage{padding:6px 4px 0}
