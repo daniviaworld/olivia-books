@@ -1,5 +1,5 @@
 import { firebaseConfig, WRITER_EMAIL } from './firebase-config.js';
-import { sanitize, dehydrate, hydrate, esc, compressImage, wordCount, COVERS, ILLUS, svgUrl, renderCover, renderIllus, botReply, BOT_CHIPS, libDB, parseName, normKey, epubInfo, epubToBook, pdfInfo, pdfCover, loadPdfJs } from './util.js';
+import { fixDialogue, sanitize, dehydrate, hydrate, esc, compressImage, wordCount, COVERS, ILLUS, svgUrl, renderCover, renderIllus, botReply, BOT_CHIPS, libDB, parseName, normKey, epubInfo, epubToBook, pdfInfo, pdfCover, loadPdfJs } from './util.js';
 import { openExport } from './export.js';
 
 const FB = 'https://www.gstatic.com/firebasejs/10.14.1/';
@@ -720,6 +720,37 @@ async function renderEditor(id) {
       });
   }
 
+  /* ----- 💬 Revisar diálogos y signos (rayas, ¿ ?, ¡ !, espacios y mayúsculas) ----- */
+  function dialModal() {
+    const txt = b => { const c = b.cloneNode(true); c.querySelectorAll('br').forEach(x => x.replaceWith(' ')); return c.textContent; };
+    const items = [];
+    for (const b of [...ed.children]) {
+      if (!/^(P|DIV)$/.test(b.tagName) || b.querySelector('img,figure,table,ul,ol,p,div') || !b.textContent.trim()) continue;
+      const orig = txt(b).replace(/\s+/g, ' ').trim(), lines = fixDialogue(txt(b));
+      if (lines.length === 1 && lines[0] === orig) continue;
+      items.push({ b, orig, lines });
+    }
+    if (!items.length) return modal(`<h2>🎉 ¡Todo en orden!</h2><p style="font-size:1.05rem">No he visto nada raro en los diálogos, los signos ¿ ? ¡ ! ni en los espacios de este capítulo. ¡Muy bien! 💜</p><div style="text-align:right"><button class="btn primary" id="oK">Genial</button></div>`, (m, close) => { $('#oK', m).onclick = close; });
+    const shown = items.slice(0, 40);
+    modal(`<h2>💬 He revisado los diálogos</h2><p class="muted" style="margin:0 0 6px">Hay <b>${items.length}</b> párrafo${items.length > 1 ? 's' : ''} que puedes mejorar. Mira el <b>antes</b> y el <b>después</b> y quita la marca de los que no quieras cambiar.</p>
+      <p class="muted" style="margin:0 0 8px;font-size:.88rem">Recuerda: cada vez que habla un personaje va en una línea nueva y empieza con una raya <b>—</b>.</p>
+      ${shown.map((it, k) => `<div class="sug"><label style="display:flex;gap:8px;align-items:center;margin:0 0 6px;color:var(--text);font-weight:700"><input type="checkbox" data-k="${k}" checked style="width:22px;height:22px"> Párrafo ${k + 1}</label>
+        <div class="muted" style="font-size:.88rem;margin-bottom:4px"><b>Antes:</b> ${esc(it.orig.length > 280 ? it.orig.slice(0, 280) + '…' : it.orig)}</div>
+        <div style="font-size:.95rem;line-height:1.5;padding:6px 8px;border-radius:10px;background:color-mix(in srgb,var(--accent) 9%,transparent)"><b>Después:</b>${it.lines.map(l => `<div>${esc(l)}</div>`).join('')}</div></div>`).join('')}
+      ${items.length > shown.length ? `<p class="muted">Salen solo los primeros ${shown.length}; cuando los cambies, vuelve a pulsar para ver los demás.</p>` : ''}
+      <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" id="dX">Ahora no</button><button class="btn primary" id="dOk" style="font-size:1.05rem">✅ Cambiar los marcados</button></div>`,
+      (m, close) => {
+        $('#dX', m).onclick = close;
+        $('#dOk', m).onclick = () => {
+          const chosen = shown.filter((_, k) => $(`[data-k="${k}"]`, m).checked);
+          close(); if (!chosen.length) return toast('No elegiste ningún cambio');
+          const c = chapters.find(x => x.id === active); if (c) snap({ ...c, html: dehydrate(ed.innerHTML) }, 'antes de revisar diálogos', true);
+          chosen.forEach(it => { if (!ed.contains(it.b)) return; it.b.replaceWith(...it.lines.map(l => { const p = document.createElement('p'); p.textContent = l; return p; })); });
+          touch(); toast(`✅ Cambiados ${chosen.length} párrafo${chosen.length > 1 ? 's' : ''}. Si algo no te gusta, usa ⏪ Recuperar texto anterior`, 5000);
+        };
+      });
+  }
+
   function readyModal() {
     const rows = [], ok = (t) => rows.push(['✅', t]), tip = (t) => rows.push(['💡', t]);
     book.coverData ? ok('Tiene portada') : tip('Falta la <b>portada</b>: pulsa 🖼 Portada del libro');
@@ -868,7 +899,7 @@ async function renderEditor(id) {
   setLiveUI();
 
   /* ----- ✒️ Pluma: chat de ayuda ----- */
-  const botActs = { cuts: suggestModal, spell: spellModal, ready: readyModal, cover: coverModal, illus: illusModal, live: () => $('#liveBtn').click(), read: () => { location.hash = '#/read/' + id; }, help: helpModal };
+  const botActs = { cuts: suggestModal, spell: spellModal, dial: dialModal, ready: readyModal, cover: coverModal, illus: illusModal, live: () => $('#liveBtn').click(), read: () => { location.hash = '#/read/' + id; }, help: helpModal };
   function botPanel() {
     if ($('.bot')) return;
     const el = document.createElement('div'); el.className = 'bot';
@@ -897,6 +928,7 @@ async function renderEditor(id) {
   $('#helperBtn').onclick = () => modal(`<h2>🧚 Ayudante</h2><p style="margin:0">¿En qué te ayudo?</p>
     <button class="opt" data-h="cuts"><span style="font-size:1.6rem">💡</span><span><b>Sugerir capítulos</b><small>Te digo dónde puedes cortar tu libro.</small></span></button>
     <button class="opt" data-h="spell"><span style="font-size:1.6rem">🔤</span><span><b>Revisar ortografía</b><small>Busco faltas y te propongo la palabra correcta.</small></span></button>
+    <button class="opt" data-h="dial"><span style="font-size:1.6rem">💬</span><span><b>Revisar diálogos y signos</b><small>Rayas —, ¿ ?, ¡ !, espacios y mayúsculas.</small></span></button>
     <button class="opt" data-h="ready"><span style="font-size:1.6rem">✅</span><span><b>¿Está listo mi libro?</b><small>Una lista para ver qué falta.</small></span></button>
     <button class="opt" data-h="cover"><span style="font-size:1.6rem">🖼</span><span><b>Portada</b><small>Sube tu imagen o elige una portada de la app.</small></span></button>
     <button class="opt" data-h="illus"><span style="font-size:1.6rem">🎨</span><span><b>Ilustraciones</b><small>Dibujos de la app para decorar tu libro.</small></span></button>
@@ -904,7 +936,7 @@ async function renderEditor(id) {
     <div style="text-align:right;margin-top:10px"><button class="btn" id="hX">Cerrar</button></div>`,
     (m, close) => {
       $('#hX', m).onclick = close;
-      $$('[data-h]', m).forEach(b => b.onclick = () => { close(); ({ cuts: suggestModal, spell: spellModal, ready: readyModal, cover: coverModal, illus: illusModal, bot: botPanel })[b.dataset.h](); });
+      $$('[data-h]', m).forEach(b => b.onclick = () => { close(); ({ cuts: suggestModal, spell: spellModal, dial: dialModal, ready: readyModal, cover: coverModal, illus: illusModal, bot: botPanel })[b.dataset.h](); });
     });
 
 

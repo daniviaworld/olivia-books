@@ -480,3 +480,88 @@ export async function pdfInfo(blob) {
     doc.destroy(); return out;
   } finally { URL.revokeObjectURL(url); }
 }
+
+/* ===== Revisor de diálogos y signos (reglas propias, sin internet) ===== */
+const DV = { dijo: 'dijo', respondio: 'respondió', exclamo: 'exclamó', pregunto: 'preguntó', contesto: 'contestó', grito: 'gritó', susurro: 'susurró', anadio: 'añadió', explico: 'explicó', comento: 'comentó', murmuro: 'murmuró', replico: 'replicó', penso: 'pensó', pidio: 'pidió', dijeron: 'dijeron', respondieron: 'respondieron', exclamaron: 'exclamaron', preguntaron: 'preguntaron', contestaron: 'contestaron', gritaron: 'gritaron', susurraron: 'susurraron' };
+const dvKey = w => (w || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-zñ]/g, '').replace('ñ', 'n');
+const dvWords = s => s.replace(/[.!?…,;:¿¡"«»]/g, ' ').split(/\s+/).filter(Boolean);
+const dvVerbAt = ws => ws.findIndex(w => dvKey(w) in DV);
+const dvIsTag = s => { const ws = dvWords(s), i = dvVerbAt(ws); return ws.length > 0 && ws.length <= 8 && i >= 0 && i <= 3; };
+const dvFixVerb = s => s.replace(/[A-Za-zÁÉÍÓÚáéíóúñÑ]+/g, w => (dvKey(w) in DV && w === w.toLowerCase()) ? DV[dvKey(w)] : (dvKey(w) in DV ? DV[dvKey(w)].replace(/^./, c => c.toUpperCase()) : w));
+const dvSplit = s => (s.match(/[^.!?…]+[.!?…]+[,;]?|[^.!?…]+$/g) || []).map(x => x.trim()).filter(Boolean);
+const DV_NARR = /^(cuando|despu[eé]s|luego|entonces|mientras|al\s|y\s+cuando|esa\s|aquel)\b/i;
+const DV_L = 'A-Za-zÁÉÍÓÚÜÑáéíóúüñ';
+
+function dvPunct(s) {
+  s = s.replace(/\s+/g, ' ').trim()
+    .replace(/\s+([,.;:!?…])/g, '$1').replace(/([¿¡])\s+/g, '$1')
+    .replace(/([!?])\.+(?!\.)/g, '$1').replace(/([!?])\.(?=\s|$)/g, '$1')
+    .replace(new RegExp('([,;:.!?…])(?=[' + DV_L + '¿¡])', 'g'), '$1 ');
+  const chunks = s.match(/[^.!?…]*[.!?…]+[,;]?|[^.!?…]+$/g) || [s];
+  return chunks.map(c => {
+    if (c.includes('?') && !c.includes('¿')) c = c.replace(/^(\s*)/, '$1¿');
+    if (c.includes('¿') && !c.includes('?')) c = c.replace(/¿/g, '').replace(/^(\s*)Cuándo\b/, '$1Cuando');
+    if (c.includes('!') && !c.includes('¡')) c = c.replace(/^(\s*)/, '$1¡');
+    if (c.includes('¡') && !c.includes('!')) c = c.replace(/¡/g, '');
+    return c.replace(new RegExp('^(\\s*[¿¡"«(]*)([a-záéíóúñü])'), (m, a, b) => a + b.toUpperCase());
+  }).join('').replace(/\s+/g, ' ').trim();
+}
+
+/* Recibe el texto de un párrafo y devuelve las líneas ya arregladas (cada línea = un párrafo). */
+export function fixDialogue(raw) {
+  let t = raw.replace(/\s+/g, ' ').trim(); if (!t) return [t];
+  const clear = /^[-–—]|\s[-–—]|[.!?…:,;¿¡"»)][-–—]/.test(t);
+  t = t.replace(/[-–—]+/g, (m, off, str) => {
+    const p = str[off - 1] || '', n = str[off + m.length] || '';
+    if (/\d/.test(p) && /\d/.test(n)) return m;
+    if (!p || /\s/.test(p) || /[.!?…:,;¿¡"»)]/.test(p)) return '\u0001';
+    if (new RegExp('[' + DV_L + ']').test(p)) { if (!n || /[.,;:!?¿¡\s]/.test(n)) return '\u0001'; if (clear && new RegExp('[' + DV_L + '¿¡]').test(n)) return '\u0001'; }
+    return m;
+  });
+  const pieces = t.split('\u0001').map(s => s.trim());
+  const items = [], last = () => items[items.length - 1];
+  const addN = s => { s = (s || '').replace(/^[.,;:\s]+/, '').trim(); if (s) items.push({ k: 'n', t: s }); };
+  pieces.forEach((piece, i) => {
+    if (i === 0) return addN(piece);
+    if (!piece) return;
+    const prevS = items.length && last().k === 's' && !last().tag;
+    if (/^[.,;:]/.test(piece) || (prevS && (dvKey(piece.split(/\s+/)[0]) in DV))) {
+      const ss = dvSplit(piece.replace(/^[.,;:\s]+/, ''));
+      if (prevS && ss.length && dvIsTag(ss[0])) last().tag = ss.shift();
+      return addN(ss.join(' '));
+    }
+    const ss = dvSplit(piece), keep = []; let tag = '', rest = [];
+    for (let k = 0; k < ss.length; k++) {
+      const s = ss[k];
+      if (k > 0 && dvIsTag(s)) {
+        const leadIn = k === ss.length - 1 && !/[.!?…]$/.test(s) && i < pieces.length - 1;
+        if (leadIn) rest = ss.slice(k); else { tag = s; rest = ss.slice(k + 1); }
+        break;
+      }
+      if (k > 0 && DV_NARR.test(s)) { rest = ss.slice(k); break; }
+      keep.push(s);
+    }
+    items.push({ k: 's', t: keep.join(' '), tag });
+    addN(rest.join(' '));
+  });
+  const lines = [];
+  items.forEach((it, idx) => {
+    if (it.k === 'n') {
+      let s = dvPunct(it.t); const nx = items[idx + 1];
+      if (nx && nx.k === 's') {
+        const ws = dvWords(s), vi = dvVerbAt(ws);
+        if (vi >= 0 && vi >= ws.length - 4) s = dvFixVerb(s).replace(/[.,;:]+$/, '') + ':';
+      }
+      if (!/[.!?…:]$/.test(s)) s += '.';
+      if (lines.length && lines[lines.length - 1].n) lines[lines.length - 1].t += ' ' + s; else lines.push({ n: 1, t: s });
+    } else {
+      let b = dvPunct(it.t).replace(/([^.!?…])[.,;:]+$/, '$1').replace(/([!?…])[.,;:]+$/, '$1');
+      if (it.tag) {
+        let g = dvPunct(it.tag).replace(/[.,;:!?…]+$/, ''); g = dvFixVerb(g);
+        if (dvKey(g.split(' ')[0]) in DV) g = g.replace(/^./, c => c.toLowerCase());
+        lines.push({ t: '—' + b + ' —' + g + '.' });
+      } else { if (!/[.!?…]$/.test(b)) b += '.'; lines.push({ t: '—' + b }); }
+    }
+  });
+  return lines.map(l => l.t);
+}
