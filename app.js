@@ -278,6 +278,8 @@ async function renderReader(id, imp = null) {
     <button class="nav-zone l" id="prev" aria-label="Página anterior"></button><button class="nav-zone r" id="next" aria-label="Página siguiente"></button></div></div>
     <div class="bottombar"><button class="btn icon" id="p1">‹</button><input type="range" id="rng" min="1" max="1" value="1"><span class="pg" id="pg"></span><button class="btn icon" id="p2">›</button></div></div>`;
   const pager = $('#pager'), pages = $('#pages');
+  // Marca final invisible: hace que el desplazamiento llegue exactamente hasta la última página (si no, la última se ve corrida a la derecha)
+  const endSp = document.createElement('i'); endSp.setAttribute('aria-hidden', 'true'); endSp.style.cssText = 'position:absolute;top:0;left:0;width:1px;height:1px;pointer-events:none;visibility:hidden'; pager.appendChild(endSp);
   let W = 0, total = 1, cur = 0;
   const startPages = [];
 
@@ -309,7 +311,9 @@ async function renderReader(id, imp = null) {
     W = pager.clientWidth;
     pages.style.setProperty('--ph', (pager.clientHeight - 60) + 'px');
     fitImages();
+    endSp.style.left = '0px';
     total = Math.max(1, Math.ceil(pager.scrollWidth / W - 0.02));
+    endSp.style.left = (total * W - 1) + 'px';
     const pr = pages.getBoundingClientRect().left;
     startPages.length = 0;
     $$('section', pages).forEach(s => startPages.push(Math.max(0, Math.floor((s.getBoundingClientRect().left - pr + 3) / W))));
