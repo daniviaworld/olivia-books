@@ -278,6 +278,7 @@ async function renderReader(id, imp = null) {
     <button class="nav-zone l" id="prev" aria-label="Página anterior"></button><button class="nav-zone r" id="next" aria-label="Página siguiente"></button></div></div>
     <div class="bottombar"><button class="btn icon" id="p1">‹</button><input type="range" id="rng" min="1" max="1" value="1"><span class="pg" id="pg"></span><button class="btn icon" id="p2">›</button></div></div>`;
   const pager = $('#pager'), pages = $('#pages');
+  $('#pg').onclick = () => $('.reader').classList.toggle('sl');   // el número de página abre/cierra la barra de saltos
   // Marca final invisible: hace que el desplazamiento llegue exactamente hasta la última página (si no, la última se ve corrida a la derecha)
   const endSp = document.createElement('i'); endSp.setAttribute('aria-hidden', 'true'); endSp.style.cssText = 'position:absolute;top:0;left:0;width:1px;height:1px;pointer-events:none;visibility:hidden'; pager.appendChild(endSp);
   let W = 0, total = 1, cur = 0;
@@ -309,7 +310,7 @@ async function renderReader(id, imp = null) {
     if (!pager.isConnected) return;
     const ratio = total > 1 ? cur / (total - 1) : 0;
     W = pager.clientWidth;
-    pages.style.setProperty('--ph', (pager.clientHeight - 60) + 'px');
+    pages.style.setProperty('--ph', (pager.clientHeight - 74) + 'px');
     fitImages();
     endSp.style.left = '0px';
     total = Math.max(1, Math.ceil(pager.scrollWidth / W - 0.02));
@@ -657,6 +658,27 @@ async function renderEditor(id) {
       });
   }
 
+  /* ----- Filtro del corrector: solo faltas claras (letras y tildes). Nada de signos ¿ ? ¡ ! ni cambios de frases ----- */
+  const ltNorm = w => w.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  function ltDist(a, b) { const m = a.length, n = b.length; if (Math.abs(m - n) > 3) return 9; let p = Array.from({ length: n + 1 }, (_, j) => j); for (let i = 1; i <= m; i++) { const c = [i]; for (let j = 1; j <= n; j++) c[j] = Math.min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); p = c; } return p[n]; }
+  const ltIgnored = () => { try { return new Set(JSON.parse(store.get('ob-ign', '[]') || '[]')); } catch { return new Set(); } };
+  const ltIgnore = w => { const s = ltIgnored(); s.add(ltNorm(w)); store.set('ob-ign', JSON.stringify([...s].slice(-300))); };
+  const AMBIG = new Set(['esta', 'estas', 'este', 'estos', 'tu', 'mi', 'el', 'se', 'si', 'te', 'de', 'mas', 'solo', 'aun']);
+  function ltPick(m, text) {   // devuelve las propuestas buenas, o null si este aviso no debe mostrarse
+    const word = text.slice(m.offset, m.offset + m.length), cat = m.rule?.category?.id || '', id = m.rule?.id || '';
+    if (!word.trim() || /[¿?¡!]/.test(word) || word.length > 30 || /\s/.test(word.trim())) return null;
+    if (ltIgnored().has(ltNorm(word))) return null;
+    const spelling = cat === 'TYPOS' || /MORFOLOGIK|HUNSPELL|SPELL/i.test(id);
+    if (!spelling && cat !== 'CASING' && cat !== 'GRAMMAR') return null;
+    const before = text.slice(Math.max(0, m.offset - 4), m.offset);
+    if (spelling && /^[A-ZÁÉÍÓÚÑ]/.test(word) && m.offset > 0 && !/(^|[.!?…¿¡\n\-—–:"«])\s*$/.test(before)) return null;   // nombres inventados: no tocar
+    const n = ltNorm(word), reps = (m.replacements || []).map(x => x.value).filter(v => v && v !== word && !/[¿?¡!]/.test(v) && !/\s/.test(v.trim()) && ltDist(n, ltNorm(v)) <= (spelling ? 3 : 2));
+    const good = reps.filter((v, i) => reps.indexOf(v) === i).slice(0, 3);
+    if (!good.length) return null;
+    if (!spelling && cat === 'GRAMMAR' && AMBIG.has(n)) return null;
+    return good;
+  }
+
   async function spellModal() {
     if (!store.get('ob-lt', '') && !confirm('Para revisar la ortografía, el texto se envía a LanguageTool, un corrector gratuito de internet.\n\n¿Quieres continuar?')) return;
     store.set('ob-lt', '1');
@@ -669,17 +691,19 @@ async function renderEditor(id) {
       while (start < text.length) {
         let end = Math.min(text.length, start + 12000);
         if (end < text.length) { const nl = text.lastIndexOf('\n', end); if (nl > start + 2000) end = nl; }
-        const res = await fetch('https://api.languagetool.org/v2/check', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body: new URLSearchParams({ text: text.slice(start, end), language: 'es', disabledCategories: 'STYLE' }) });
+        const res = await fetch('https://api.languagetool.org/v2/check', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body: new URLSearchParams({ text: text.slice(start, end), language: 'es', disabledCategories: 'STYLE,PUNCTUATION,TYPOGRAPHY,REDUNDANCY,COLLOQUIALISMS,REGIONALISMS' }) });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         (await res.json()).matches.forEach(m => matches.push({ ...m, offset: m.offset + start }));
         start = end;
       }
     } catch (e) { console.warn(e); return toast('No pude conectar con el corrector. Mientras tanto, mira los subrayados rojos 😉', 4500); }
     const items = [];
-    for (const m of matches.slice(0, 60)) {
+    for (const m of matches) {
+      if (items.length >= 60) break;
+      const reps = ltPick(m, text); if (!reps) continue;
       const a = rangeAt(map, m.offset), z = rangeAt(map, m.offset + m.length); if (!a || !z) continue;
       const r = document.createRange(); r.setStart(a.startContainer, a.startOffset); r.setEnd(z.startContainer, z.startOffset);
-      items.push({ r, word: text.slice(m.offset, m.offset + m.length), msg: m.shortMessage || m.message, reps: (m.replacements || []).slice(0, 3).map(x => x.value) });
+      items.push({ r, word: text.slice(m.offset, m.offset + m.length), msg: m.shortMessage || m.message, reps });
     }
     if (!items.length) return modal(`<h2>🎉 ¡Sin faltas!</h2><p style="font-size:1.05rem">No encontré ninguna falta. ¡Qué buen trabajo!</p><div style="text-align:right"><button class="btn primary" id="oK">Genial</button></div>`, (m, close) => { $('#oK', m).onclick = close; });
     modal(`<h2>🔤 He encontrado ${items.length} cosas</h2><p class="muted" style="margin:0 0 6px">Toca la palabra correcta para cambiarla.</p><div id="spl">${items.map((it, k) => `<div class="sug" data-k="${k}"><div>“<mark>${esc(it.word)}</mark>” <span class="muted">${esc(it.msg)}</span></div>
@@ -690,7 +714,7 @@ async function renderEditor(id) {
         const done = k => { $(`.sug[data-k="${k}"]`, m)?.remove(); if (!$('.sug', m)) { close(); toast('🎉 ¡Todo revisado!'); } };
         m.addEventListener('click', e => {
           const b = e.target.closest('button'); if (!b) return;
-          if (b.dataset.s) return done(b.dataset.s);
+          if (b.dataset.s) { ltIgnore(items[+b.dataset.s].word); return done(b.dataset.s); }
           if (b.dataset.r) { const [k, j] = b.dataset.r.split(':').map(Number), it = items[k]; it.r.deleteContents(); it.r.insertNode(document.createTextNode(it.reps[j])); touch(); done(k); }
         });
       });
@@ -798,16 +822,17 @@ async function renderEditor(id) {
     if (text.trim().length < 4) { chip.textContent = '✍️ Sigue escribiendo…'; return; }
     liveBusy = true; chip.textContent = '🔎 Mirando…';
     try {
-      const res = await fetch(LT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body: new URLSearchParams({ text, language: 'es', disabledCategories: 'STYLE' }) });
+      const res = await fetch(LT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body: new URLSearchParams({ text, language: 'es', disabledCategories: 'STYLE,PUNCTUATION,TYPOGRAPHY,REDUNDANCY,COLLOQUIALISMS,REGIONALISMS' }) });
       if (res.status === 429) { chip.textContent = '⏳ Un momento, descanso un poquito…'; return; }
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const j = await res.json();
       if (textMap(blk).text.slice(0, 6000) !== text) { liveBusy = false; return scheduleLive(); }
       const arr = [];
       for (const m of j.matches) {
+        const reps = ltPick(m, text); if (!reps) continue;
         const a = rangeAt(map, m.offset), z = rangeAt(map, m.offset + m.length); if (!a || !z) continue;
         const r = document.createRange(); r.setStart(a.startContainer, a.startOffset); r.setEnd(z.startContainer, z.startOffset);
-        arr.push({ r, msg: m.shortMessage || m.message, reps: (m.replacements || []).slice(0, 3).map(x => x.value), word: text.slice(m.offset, m.offset + m.length) });
+        arr.push({ r, msg: m.shortMessage || m.message, reps, word: text.slice(m.offset, m.offset + m.length) });
       }
       liveErr.set(blk, arr); paintHL();
       chip.textContent = arr.length ? `⚠️ ${arr.length} cosa${arr.length > 1 ? 's' : ''} por revisar: toca la palabra subrayada` : '✅ ¡Esta parte está bien!';
@@ -826,7 +851,7 @@ async function renderEditor(id) {
       fix.style.top = Math.min(window.innerHeight - 150, rect.bottom + 8) + 'px'; fix.style.left = Math.max(8, Math.min(window.innerWidth - 290, rect.left - 20)) + 'px'; fix.classList.remove('hidden');
       fix.onclick = ev => {
         const b = ev.target.closest('button'); if (!b) return;
-        if (b.dataset.j !== undefined) { e.r.deleteContents(); e.r.insertNode(document.createTextNode(e.reps[+b.dataset.j])); touch(); }
+        if (b.dataset.j !== undefined) { e.r.deleteContents(); e.r.insertNode(document.createTextNode(e.reps[+b.dataset.j])); touch(); } else if (b.dataset.x) ltIgnore(e.word);
         for (const [k, a] of liveErr) liveErr.set(k, a.filter(x => x !== e));
         paintHL(); hideFix(); scheduleLive();
       };
@@ -1307,7 +1332,7 @@ async function renderPdfReader(meta, lib, save) {
     <button class="nav-zone l" id="prev" aria-label="Página anterior"></button><button class="nav-zone r" id="next" aria-label="Página siguiente"></button></div>
     <div class="bottombar"><button class="btn icon" id="p1">‹</button><input type="range" id="rng" min="1" max="${N}" value="1"><span class="pg" id="pg"></span><button class="btn icon" id="p2">›</button></div></div>`;
   bindTopbar(() => requestAnimationFrame(() => show(cur)));
-  immersive($('.reader'));
+  immersive($('.reader')); $('#pg').onclick = () => $('.reader').classList.toggle('sl');
   const box = $('#pdfw'), cv = $('#cv'), ctx = cv.getContext('2d');
   let cur = Math.max(1, Math.min(N, +meta.page || 1)), zoom = +store.get('ob-pdf-zoom', 1) || 1, tk = 0, task = null;
   async function show(n) {

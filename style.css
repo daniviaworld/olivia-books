@@ -430,3 +430,17 @@ input[type=search]{width:100%;border:1px solid var(--line);background:var(--surf
 .reader.immersive .bottombar>:not(.pg){display:none}
 .reader.immersive .bottombar .pg{font-size:.78rem;opacity:.7;text-align:center}
 .reader.immersive .stage{padding:6px 4px 0}
+
+/* ===== Lector grande: botones flotantes en vez de barra inferior ===== */
+.reader{position:relative}
+.reader .bottombar{position:absolute;left:0;right:0;bottom:0;height:0;margin:0;padding:0;border:0;background:none;box-shadow:none;border-radius:0;pointer-events:none;z-index:30;display:block}
+.reader .bottombar>*{pointer-events:auto}
+.reader .bottombar .btn.icon{position:absolute;bottom:10px;width:42px;height:42px;font-size:1.4rem;opacity:.82;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.reader .bottombar #p1{left:10px}.reader .bottombar #p2{right:10px}
+.reader .bottombar .pg{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);padding:5px 14px;border-radius:99px;background:color-mix(in srgb,var(--surface) 82%,transparent);box-shadow:0 3px 12px #4a2fc424;font-size:.82rem;cursor:pointer;white-space:nowrap;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.reader .bottombar input[type=range]{display:none;position:absolute;bottom:62px;left:64px;right:64px;width:auto;padding:10px 14px;border-radius:99px;background:color-mix(in srgb,var(--surface) 92%,transparent);box-shadow:0 6px 20px #4a2fc42e;box-sizing:border-box;height:auto}
+.reader.sl .bottombar input[type=range]{display:block}
+.reader .stage{padding:4px 4px 0}
+.pages{padding:30px 0 44px}
+.reader.immersive .bottombar .pg{opacity:.7;background:none;box-shadow:none}
+.reader.immersive .bottombar .btn.icon{display:none}
