@@ -288,7 +288,7 @@ async function renderReader(id, imp = null) {
     chapters.map(c => c.raw ? `<section data-ch="${c.id}" id="${c.id}"${c.nb ? ' class="nb"' : ''}>${c.html}</section>` : `<section data-ch="${c.id}"><h2 class="chap-title">${esc(c.title)}</h2>${sanitize(c.html)}</section>`).join('');
   hydrate(pages, imgs);
   /* Letra capital solo si el primer bloque del capítulo es un párrafo normal que empieza por letra (no por raya —, comillas ni signos) */
-  $$('.chap-title', pages).forEach(h => { const n = h.nextElementSibling; if (n && n.tagName === 'P' && /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(n.textContent.trim())) n.classList.add('dc'); });
+  $$('.chap-title', pages).forEach(h => { let n = h.nextSibling; while (n && n.nodeType === 3 && !n.textContent.trim()) n = n.nextSibling; if (n && n.nodeType === 1 && n.tagName === 'P' && /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(n.textContent.trim())) n.classList.add('dc'); });
 
   const imgsReady = Promise.all($$('img', pages).map(i => i.decode?.().catch(() => {}) ?? 0));
   /* Ajusta los dibujos para que no queden solos en una página: si no caben en el hueco
