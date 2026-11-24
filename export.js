@@ -146,6 +146,12 @@ export async function buildEpub({ book, chapters, imgs }) {
       i.setAttribute('src', 'images/' + name); i.setAttribute('alt', 'Ilustración'); i.removeAttribute('data-img');
     });
     d.querySelectorAll('.pagebreak').forEach(p => p.setAttribute('style', 'page-break-before:always'));
+    {   // texto suelto (sin <p>) → lo meto en un párrafo para que el ePub sea válido
+      const BLK = /^(P|DIV|H[1-6]|UL|OL|BLOCKQUOTE|TABLE|FIGURE|HR|PRE|SECTION)$/; let run = [];
+      const flush = () => { if (!run.length) return; const txt = run.map(n => n.textContent).join('').trim(), pic = run.some(n => n.nodeType === 1 && (n.tagName === 'IMG' || n.querySelector('img')));
+        if (txt || pic) { const p = document.createElement('p'); run[0].before(p); run.forEach(n => p.appendChild(n)); } else run.forEach(n => n.remove()); run = []; };
+      [...d.childNodes].forEach(n => { if (n.nodeType === 1 && BLK.test(n.tagName)) flush(); else run.push(n); }); flush();
+    }
     return [...d.childNodes].map(n => ser.serializeToString(n)).join('').replace(/ xmlns="http:\/\/www\.w3\.org\/1999\/xhtml"/g, '');
   };
   const page = (title, inner) => `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="es" xml:lang="es"><head><meta charset="utf-8"/><title>${xmlEsc(title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head><body>${inner}</body></html>`;

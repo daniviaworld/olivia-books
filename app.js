@@ -782,7 +782,7 @@ async function renderEditor(id) {
       bg(setDoc(ref, { data: im.data, w: im.w, h: im.h, key: im.key || '', createdAt: serverTimestamp() }), 'guardar el dibujo');
     }
     restoreSel();
-    document.execCommand('insertHTML', false, `<img data-img="${rid}" class="sz-s" src="${imgs.get(rid).data}" alt="Ilustración"><p><br></p>`);
+    document.execCommand('insertHTML', false, `<img data-img="${rid}" class="sz-m" src="${imgs.get(rid).data}" alt="Ilustración"><p><br></p>`);
     touch();
   }
 

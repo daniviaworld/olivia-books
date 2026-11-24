@@ -519,6 +519,12 @@ export function fixDialogue(raw) {
     return m;
   });
   const pieces = t.split('\u0001').map(s => s.trim());
+  if (pieces.length === 2 && !pieces[0]) {   // línea con raya que en realidad es solo narración: «—Su madre respondió.»
+    const ss = dvSplit(pieces[1]), ws = dvWords(pieces[1]), vi = dvVerbAt(ws);
+    if (ss.length === 1 && !/[¿?¡!]/.test(pieces[1]) && vi >= 0 && ((dvIsTag(ss[0])) || (DV_NARR.test(pieces[1]) && vi >= ws.length - 4))) {
+      let s = dvFixVerb(dvPunct(pieces[1])).replace(/[.,;:]+$/, '') + ':'; return [s];
+    }
+  }
   const items = [], last = () => items[items.length - 1];
   const addN = s => { s = (s || '').replace(/^[.,;:\s]+/, '').trim(); if (s) items.push({ k: 'n', t: s }); };
   pieces.forEach((piece, i) => {
