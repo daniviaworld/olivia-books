@@ -287,6 +287,8 @@ async function renderReader(id, imp = null) {
   pages.innerHTML = `<section class="titlepage">${book.coverData ? `<img class="cv" src="${book.coverData}" alt="Portada">` : ''}<h1>${esc(book.title)}</h1><div class="by">${esc(book.author || '')}</div></section>` +
     chapters.map(c => c.raw ? `<section data-ch="${c.id}" id="${c.id}"${c.nb ? ' class="nb"' : ''}>${c.html}</section>` : `<section data-ch="${c.id}"><h2 class="chap-title">${esc(c.title)}</h2>${sanitize(c.html)}</section>`).join('');
   hydrate(pages, imgs);
+  /* Letra capital solo si el primer bloque del capítulo es un párrafo normal que empieza por letra (no por raya —, comillas ni signos) */
+  $$('.chap-title', pages).forEach(h => { const n = h.nextElementSibling; if (n && n.tagName === 'P' && /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(n.textContent.trim())) n.classList.add('dc'); });
 
   const imgsReady = Promise.all($$('img', pages).map(i => i.decode?.().catch(() => {}) ?? 0));
   /* Ajusta los dibujos para que no queden solos en una página: si no caben en el hueco

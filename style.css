@@ -324,7 +324,7 @@ h1.page-title{font-size:2rem;margin:10px 0 18px}
 .pages{padding:34px 0 24px}
 .pages .chap-title{font-size:2.05em;color:var(--accent);margin:.5em 0 .9em}
 .pages .chap-title::after{content:'✦ ✦ ✦';display:block;font-size:.32em;letter-spacing:.7em;color:var(--accent2);margin-top:.6em;padding-left:.7em}
-.pages .chap-title + p::first-letter{float:left;font-size:3.3em;line-height:.85;padding:.06em .1em 0 0;color:var(--accent);font-weight:700}
+.pages .chap-title + p.dc::first-letter{float:left;font-size:3.3em;line-height:.85;padding:.06em .1em 0 0;color:var(--accent);font-weight:700}
 .pages img{border-radius:0;box-shadow:none}
 .titlepage{gap:14px}
 .titlepage h1{color:var(--accent);font-size:2.4em}
